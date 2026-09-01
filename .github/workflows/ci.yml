@@ -1,0 +1,86 @@
+name: CI
+
+# Build + verify the runtime host, then publish the one provider-neutral image
+# (ADR-002). aion-infra consumes this image by tag; it never builds the runtime.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  verify:
+    name: typecheck · build · portability · acceptance
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aion_data
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Vendor + build @aion/core and @aion/data
+        run: node scripts/setup-deps.mjs
+
+      - name: Install
+        run: npm install --no-audit --no-fund
+        env:
+          AION_SKIP_DEPS_SETUP: '1'
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Portability check
+        run: npm run portability-check
+
+      - name: Provision least-privilege roles
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d aion_data -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE aion_migrator LOGIN PASSWORD 'ci_migrator';
+          CREATE ROLE aion_app LOGIN PASSWORD 'ci_app';
+          GRANT ALL ON SCHEMA public TO aion_migrator;
+          ALTER DATABASE aion_data OWNER TO aion_migrator;
+          SQL
+
+      - name: Acceptance (migrate → deploy → readiness → smoke)
+        env:
+          MIGRATION_DATABASE_URL: postgresql://aion_migrator:ci_migrator@localhost:5432/aion_data
+          DATABASE_URL: postgresql://aion_app:ci_app@localhost:5432/aion_data
+          DATABASE_SSL: 'false'
+          GIT_SHA: ${{ github.sha }}
+        run: npm run acceptance
+
+  image:
+    name: build + publish image
+    needs: verify
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/aion-runtime:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/aion-runtime:latest
