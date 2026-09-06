@@ -15,7 +15,8 @@
     "start": "node dist/index.js",
     "migrate": "node dist/migrate.js",
     "portability-check": "bash scripts/portability-check.sh",
-    "acceptance": "bash scripts/local-acceptance.sh"
+    "acceptance": "bash scripts/local-acceptance.sh",
+    "proof:mission001": "bash scripts/mission001-proof-matrix.sh"
   },
   "dependencies": {
     "@aion/core": "file:vendor/aion-core",

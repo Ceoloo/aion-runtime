@@ -66,7 +66,13 @@ export class RuntimeClient {
 
   async decideApproval(
     approvalId: string,
-    body: { approve: boolean; decidedBy: string; note?: string },
+    body: {
+      approve: boolean;
+      decidedBy: string;
+      note?: string;
+      /** Optional full actor record so Runtime can persist decidedBy for FK/attribution. */
+      actor?: Actor;
+    },
   ): Promise<unknown> {
     return this.request(
       'POST',
