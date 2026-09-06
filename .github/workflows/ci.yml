@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   verify:
-    name: typecheck · build · portability · acceptance
+    name: typecheck · build · portability · acceptance · mission001-proof
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -64,6 +64,15 @@ jobs:
           DATABASE_SSL: 'false'
           GIT_SHA: ${{ github.sha }}
         run: npm run acceptance
+
+      - name: Mission 001 proof matrix (PASS A/B/C/D)
+        env:
+          MIGRATION_DATABASE_URL: postgresql://aion_migrator:ci_migrator@localhost:5432/aion_data
+          DATABASE_URL: postgresql://aion_app:ci_app@localhost:5432/aion_data
+          DATABASE_SSL: 'false'
+          GIT_SHA: ${{ github.sha }}
+          PORT: '8091'
+        run: npm run proof:mission001
 
   image:
     name: build + publish image

@@ -123,8 +123,17 @@ export function buildControlPlane(
   const clock = systemClock;
   const events = new EventEmitter(dataLayer.events, clock);
   const telemetry = new Telemetry(dataLayer.telemetry, clock);
+  // R2 capabilities must be explicitly gated — risk classification alone does
+  // not pause for approval (PolicyEngine.requiresApproval). Catalog marks
+  // revenue.followup.execute as approvalRequired; honor that here.
+  const gatedCapabilities = MISSION_001_CAPABILITIES.filter(
+    (cap) => DEFAULT_CAPABILITY_RISK[cap] === 'R2',
+  );
   const policyEngine = new PolicyEngine(
-    { risk: { capabilityRisk: DEFAULT_CAPABILITY_RISK } },
+    {
+      risk: { capabilityRisk: DEFAULT_CAPABILITY_RISK },
+      gatedCapabilities,
+    },
     { clock },
   );
   const approvalGate = new ApprovalGate(dataLayer.approvals, clock);

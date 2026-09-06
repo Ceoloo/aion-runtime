@@ -24,6 +24,7 @@ import {
   Capability,
   ServiceKey,
   createExecutionObject,
+  isAionError,
   type AgentActor,
   type CommandInput,
   type RiskLevel,
@@ -106,6 +107,26 @@ export async function handleGatewayRequest(
     if (err instanceof SyntaxError) {
       return jsonError(400, 'invalid_json', 'request body must be valid JSON');
     }
+    // Map domain errors so approval retries / illegal transitions do not look
+    // like opaque 500s (Mission 001 PASS C/D: second decision must fail closed).
+    if (isAionError(err)) {
+      const status =
+        err.code === 'INVALID_STATE_TRANSITION'
+          ? 409
+          : err.code === 'NOT_FOUND'
+            ? 404
+            : err.code === 'PERMISSION_DENIED'
+              ? 403
+              : err.code === 'VALIDATION'
+                ? 400
+                : 500;
+      logger.error('gateway_domain_error', {
+        operation: `${method} ${path}`,
+        code: err.code,
+        error: err.message,
+      });
+      return jsonError(status, err.code.toLowerCase(), err.message);
+    }
     logger.error('gateway_error', {
       operation: `${method} ${path}`,
       error: err instanceof Error ? err.message : 'unknown',
@@ -146,6 +167,9 @@ async function submitCommand(
   let catalogServiceKey: string | undefined;
   let catalogRisk: RiskLevel | undefined;
   let catalogWorkflowId: string | undefined;
+  let catalogApprovalRequired = false;
+  let catalogRequiredPermissions: Capability[] = [];
+  let catalogService: Awaited<ReturnType<typeof cp.dataLayer.services.getByKey>> | undefined;
 
   if (typeof raw.serviceKey === 'string' && raw.serviceKey.length > 0) {
     const keyParsed = ServiceKey.safeParse(raw.serviceKey);
@@ -177,6 +201,9 @@ async function submitCommand(
     catalogServiceKey = service.serviceKey;
     catalogRisk = service.riskLevel;
     catalogWorkflowId = service.workflowId;
+    catalogApprovalRequired = service.approvalRequired === true;
+    catalogRequiredPermissions = [...service.requiredPermissions];
+    catalogService = service;
   } else {
     const capParsed = Capability.safeParse(raw.capability);
     if (!capParsed.success) {
@@ -192,11 +219,82 @@ async function submitCommand(
   // Every governed action is attributable to a registered actor.
   await cp.dataLayer.actors.save(actor);
 
+  // Catalog contract: requiredPermissions are deny-by-default grants the caller
+  // must hold (in addition to the resolved capability itself).
+  if (catalogServiceKey && catalogRequiredPermissions.length > 0) {
+    const grants = new Set(actor.permissions.map(String));
+    const missing = catalogRequiredPermissions.filter((p) => !grants.has(String(p)));
+    if (missing.length > 0) {
+      return jsonError(
+        403,
+        'permission_denied',
+        `actor lacks requiredPermissions for ${catalogServiceKey}: ${missing.join(', ')}`,
+      );
+    }
+  }
+
+  // Submit idempotency: same requestId returns the original run/execution
+  // without creating a second execution (approval/retry safety).
+  if (typeof raw.requestId === 'string' && raw.requestId.length > 0) {
+    const existing = await cp.dataLayer.runs.getByRequestId(raw.requestId);
+    if (existing) {
+      const execution = await cp.dataLayer.executions.getByRunId(existing.runId);
+      const approval =
+        existing.approvalId != null
+          ? await cp.dataLayer.approvals.get(existing.approvalId)
+          : undefined;
+      const status =
+        existing.state === 'awaiting_approval'
+          ? 'awaiting_approval'
+          : existing.state === 'denied'
+            ? 'denied'
+            : existing.state === 'failed'
+              ? 'failed'
+              : 'completed';
+      logger.info('gateway_command_idempotent_replay', {
+        operation: 'POST /v1/commands',
+        request_id: raw.requestId,
+        run_id: existing.runId,
+        status,
+      });
+      return {
+        status: status === 'denied' ? 403 : status === 'awaiting_approval' ? 202 : 200,
+        body: {
+          status,
+          run: existing,
+          execution: execution ?? null,
+          ...(approval ? { approval } : {}),
+          idempotentReplay: true,
+          ...(catalogService
+            ? {
+                service: {
+                  serviceKey: catalogService.serviceKey,
+                  version: catalogService.version,
+                  riskLevel: catalogService.riskLevel,
+                  approvalRequired: catalogService.approvalRequired,
+                  requiredPermissions: catalogService.requiredPermissions,
+                  capability: catalogService.capability,
+                },
+              }
+            : {}),
+        },
+      };
+    }
+  }
+
   const metadata: Record<string, unknown> = {
     ...(raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
       ? (raw.metadata as Record<string, unknown>)
       : {}),
     ...(catalogServiceKey ? { serviceKey: catalogServiceKey } : {}),
+    ...(catalogApprovalRequired ? { approvalRequired: true } : {}),
+    ...(catalogService
+      ? {
+          serviceVersion: catalogService.version,
+          serviceRiskLevel: catalogService.riskLevel,
+          serviceOwner: catalogService.owner,
+        }
+      : {}),
   };
 
   const input: CommandInput = {
@@ -254,6 +352,21 @@ async function submitCommand(
       ...(result.result ? { result: result.result } : {}),
       ...(result.approval ? { approval: result.approval } : {}),
       ...(result.outcomeReference ? { outcomeReference: result.outcomeReference } : {}),
+      ...(catalogService
+        ? {
+            service: {
+              serviceKey: catalogService.serviceKey,
+              version: catalogService.version,
+              riskLevel: catalogService.riskLevel,
+              approvalRequired: catalogService.approvalRequired,
+              requiredPermissions: catalogService.requiredPermissions,
+              capability: catalogService.capability,
+              owner: catalogService.owner,
+              costHintUnits: catalogService.costHintUnits,
+              evalRefs: catalogService.evalRefs,
+            },
+          }
+        : {}),
     },
   };
 }
@@ -287,6 +400,23 @@ async function decideApproval(
       'invalid_decision',
       'decision must include approve (boolean) and decidedBy (actor id)',
     );
+  }
+
+  // Persist the deciding actor when provided so `approvals.decided_by` FK
+  // (and attribution) remain coherent after restart / approval resume.
+  if (raw.actor !== undefined) {
+    const actorParsed = Actor.safeParse(raw.actor);
+    if (!actorParsed.success) {
+      return jsonError(400, 'invalid_actor', 'actor must satisfy the Core Actor contract');
+    }
+    if (actorParsed.data.actorId !== parsed.data.decidedBy) {
+      return jsonError(
+        400,
+        'actor_mismatch',
+        'actor.actorId must match decidedBy',
+      );
+    }
+    await cp.dataLayer.actors.save(actorParsed.data);
   }
 
   const result = await cp.orchestrator.resume(parsed.data);
