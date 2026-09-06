@@ -10,10 +10,12 @@
  * Routes:
  *   POST /v1/commands                     — submit governed work
  *                                         (capability or serviceKey)
+ *   POST /v1/missions/run                 — Mission 004 multi-step orchestration
  *   GET  /v1/runs/:runId                  — fetch run state
  *   POST /v1/approvals/:approvalId/decision — human gate decision
  *   GET  /v1/executions/:executionId      — canonical Execution Object
  *   GET  /v1/executions/by-run/:runId     — Execution Object by run
+ *   GET  /v1/executions/by-root/:rootId   — lineage tree under a root
  *   GET  /v1/services                     — list Service Catalog (?status=)
  *   GET  /v1/services/:serviceKey         — fetch one catalog service
  */
@@ -23,8 +25,12 @@ import {
   ApprovalDecision,
   AuthorizationRequest,
   Capability,
+  Mission,
   ServiceKey,
+  Workflow,
   createExecutionObject,
+  createMission,
+  createWorkflow,
   isAionError,
   type AgentActor,
   type CommandInput,
@@ -71,6 +77,10 @@ export async function handleGatewayRequest(
       return await submitCommand(await readJsonBody(req), cp, logger);
     }
 
+    if (method === 'POST' && path === '/v1/missions/run') {
+      return await runMission(await readJsonBody(req), cp, logger);
+    }
+
     if (method === 'GET' && path === '/v1/services') {
       const statusParam = new URL(url, 'http://localhost').searchParams.get('status');
       const status =
@@ -93,6 +103,11 @@ export async function handleGatewayRequest(
     const approvalMatch = /^\/v1\/approvals\/([^/]+)\/decision$/.exec(path);
     if (method === 'POST' && approvalMatch) {
       return await decideApproval(approvalMatch[1]!, await readJsonBody(req), cp, logger);
+    }
+
+    const exeByRootMatch = /^\/v1\/executions\/by-root\/([^/]+)$/.exec(path);
+    if (method === 'GET' && exeByRootMatch) {
+      return await getExecutionsByRoot(exeByRootMatch[1]!, cp, req);
     }
 
     const exeMatch = /^\/v1\/executions\/([^/]+)$/.exec(path);
@@ -369,6 +384,11 @@ async function submitCommand(
       : catalogRisk
         ? { riskLevel: catalogRisk }
         : {}),
+    ...(typeof raw.executionId === 'string' ? { executionId: raw.executionId } : {}),
+    ...(typeof raw.parentExecutionId === 'string'
+      ? { parentExecutionId: raw.parentExecutionId }
+      : {}),
+    ...(typeof raw.rootExecutionId === 'string' ? { rootExecutionId: raw.rootExecutionId } : {}),
     ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
   };
 
@@ -378,6 +398,16 @@ async function submitCommand(
     run: result.run,
     agent,
     result: result.result,
+    executionId:
+      (typeof raw.executionId === 'string' ? (raw.executionId as never) : undefined) ??
+      result.command.executionId,
+    parentExecutionId:
+      (typeof raw.parentExecutionId === 'string'
+        ? (raw.parentExecutionId as never)
+        : undefined) ?? result.command.parentExecutionId,
+    rootExecutionId:
+      (typeof raw.rootExecutionId === 'string' ? (raw.rootExecutionId as never) : undefined) ??
+      result.command.rootExecutionId,
     tenantId: agent?.tenantId,
     companyId: agent?.companyId,
     ventureId: agent?.ventureId,
@@ -478,7 +508,20 @@ async function decideApproval(
     run: result.run,
     agent,
     result: result.result,
-    executionId: existing?.executionId,
+    executionId:
+      (typeof raw.executionId === 'string' ? (raw.executionId as never) : undefined) ??
+      result.command.executionId ??
+      existing?.executionId,
+    parentExecutionId:
+      (typeof raw.parentExecutionId === 'string'
+        ? (raw.parentExecutionId as never)
+        : undefined) ??
+      result.command.parentExecutionId ??
+      existing?.parentExecutionId,
+    rootExecutionId:
+      (typeof raw.rootExecutionId === 'string' ? (raw.rootExecutionId as never) : undefined) ??
+      result.command.rootExecutionId ??
+      existing?.rootExecutionId,
     tenantId: agent?.tenantId ?? existing?.tenantId,
     auditTrace: [
       ...(existing?.auditTrace ?? []),
@@ -569,6 +612,237 @@ async function getExecutionByRun(
   const denied = assertExecutionTenantAccess(execution, req);
   if (denied) return denied;
   return { status: 200, body: { execution } };
+}
+
+/**
+ * Mission 004 — list Execution Objects under a shared root lineage tree.
+ * Tenant header required (same isolation boundary as other execution GETs).
+ */
+async function getExecutionsByRoot(
+  rootExecutionId: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const executions = await cp.dataLayer.executions.listByRoot(rootExecutionId as never);
+  if (executions.length === 0) {
+    return jsonError(
+      404,
+      'execution_not_found',
+      `no executions under root ${rootExecutionId}`,
+    );
+  }
+  // Deny if ANY tree member is cross-tenant for the caller.
+  for (const execution of executions) {
+    const denied = assertExecutionTenantAccess(execution, req);
+    if (denied) return denied;
+  }
+  return {
+    status: 200,
+    body: { rootExecutionId, executions, count: executions.length },
+  };
+}
+
+/**
+ * Mission 004 — run (or resume) a multi-step Mission via MissionOrchestrator.
+ *
+ * Accepts either already-saved missionId/workflowId, or inline mission/workflow
+ * objects that are persisted first. Persists one Execution Object per step with
+ * correct parent/root lineage.
+ */
+async function runMission(
+  body: unknown,
+  cp: ControlPlane,
+  logger: Logger,
+): Promise<GatewayResponse> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'mission run body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+
+  const actorParsed = Actor.safeParse(raw.actor);
+  if (!actorParsed.success) {
+    return jsonError(400, 'invalid_actor', 'actor must satisfy the Core Actor contract');
+  }
+  const actor = actorParsed.data;
+  await cp.dataLayer.actors.save(actor);
+
+  let missionId: string | undefined =
+    typeof raw.missionId === 'string' ? raw.missionId : undefined;
+  let workflowId: string | undefined =
+    typeof raw.workflowId === 'string' ? raw.workflowId : undefined;
+
+  if (raw.mission !== undefined) {
+    if (!raw.mission || typeof raw.mission !== 'object' || Array.isArray(raw.mission)) {
+      return jsonError(400, 'invalid_mission', 'mission must be a JSON object');
+    }
+    const missionRaw = raw.mission as Record<string, unknown>;
+    const full = Mission.safeParse(missionRaw);
+    const mission = full.success
+      ? full.data
+      : createMission({
+          name: typeof missionRaw.name === 'string' ? missionRaw.name : 'untitled',
+          owner: typeof missionRaw.owner === 'string' ? missionRaw.owner : 'runtime',
+          objective:
+            typeof missionRaw.objective === 'string'
+              ? missionRaw.objective
+              : 'mission orchestration',
+          ...(typeof missionRaw.description === 'string'
+            ? { description: missionRaw.description }
+            : {}),
+          ...(typeof missionRaw.status === 'string' ? { status: missionRaw.status as never } : {}),
+          ...(typeof missionRaw.riskLevel === 'string'
+            ? { riskLevel: missionRaw.riskLevel as RiskLevel }
+            : {}),
+          ...(Array.isArray(missionRaw.successCriteria)
+            ? { successCriteria: missionRaw.successCriteria as string[] }
+            : {}),
+          ...(missionRaw.metadata &&
+          typeof missionRaw.metadata === 'object' &&
+          !Array.isArray(missionRaw.metadata)
+            ? { metadata: missionRaw.metadata as Record<string, unknown> }
+            : {}),
+        });
+    await cp.dataLayer.missions.save(mission);
+    missionId = mission.missionId;
+  }
+
+  if (raw.workflow !== undefined) {
+    if (!raw.workflow || typeof raw.workflow !== 'object' || Array.isArray(raw.workflow)) {
+      return jsonError(400, 'invalid_workflow', 'workflow must be a JSON object');
+    }
+    const workflowRaw = raw.workflow as Record<string, unknown>;
+    const full = Workflow.safeParse(workflowRaw);
+    let workflow;
+    if (full.success) {
+      workflow = full.data;
+    } else {
+      if (!Array.isArray(workflowRaw.steps) || typeof workflowRaw.name !== 'string') {
+        return jsonError(
+          400,
+          'invalid_workflow',
+          'inline workflow requires name and steps[]',
+        );
+      }
+      try {
+        workflow = createWorkflow({
+          name: workflowRaw.name,
+          steps: workflowRaw.steps as never,
+          ...(typeof workflowRaw.description === 'string'
+            ? { description: workflowRaw.description }
+            : {}),
+          ...(typeof workflowRaw.version === 'string'
+            ? { version: workflowRaw.version }
+            : {}),
+          ...(workflowRaw.metadata &&
+          typeof workflowRaw.metadata === 'object' &&
+          !Array.isArray(workflowRaw.metadata)
+            ? { metadata: workflowRaw.metadata as Record<string, unknown> }
+            : {}),
+        });
+      } catch (err) {
+        return jsonError(
+          400,
+          'invalid_workflow',
+          err instanceof Error ? err.message : 'invalid workflow',
+        );
+      }
+    }
+    await cp.dataLayer.workflows.save(workflow);
+    workflowId = workflow.workflowId;
+  }
+
+  if (!missionId || !workflowId) {
+    return jsonError(
+      400,
+      'missing_ids',
+      'missionId+workflowId or inline mission+workflow are required',
+    );
+  }
+
+  const stepPayloads =
+    raw.stepPayloads && typeof raw.stepPayloads === 'object' && !Array.isArray(raw.stepPayloads)
+      ? (raw.stepPayloads as Record<string, Record<string, unknown>>)
+      : undefined;
+
+  const result = await cp.missionOrchestrator.run({
+    missionId,
+    workflowId,
+    actor,
+    ...(stepPayloads ? { stepPayloads } : {}),
+    ...(typeof raw.resumeFromStep === 'number' ? { resumeFromStep: raw.resumeFromStep } : {}),
+    ...(typeof raw.rootExecutionId === 'string'
+      ? { rootExecutionId: raw.rootExecutionId as never }
+      : {}),
+    ...(typeof raw.parentExecutionId === 'string'
+      ? { parentExecutionId: raw.parentExecutionId as never }
+      : {}),
+    ...(typeof raw.requestIdPrefix === 'string'
+      ? { requestIdPrefix: raw.requestIdPrefix }
+      : {}),
+    ...(raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
+      ? { metadata: raw.metadata as Record<string, unknown> }
+      : {}),
+  });
+
+  const agent = actor.actorType === 'agent' ? (actor as AgentActor) : undefined;
+  const persistedSteps = [];
+  for (const step of result.steps) {
+    const existing = await cp.dataLayer.executions.getByRunId(step.orchestration.run.runId);
+    const execution = createExecutionObject({
+      run: step.orchestration.run,
+      agent,
+      result: step.orchestration.result,
+      executionId: step.executionId,
+      parentExecutionId: step.parentExecutionId,
+      rootExecutionId: step.rootExecutionId,
+      tenantId: agent?.tenantId,
+      companyId: agent?.companyId,
+      ventureId: agent?.ventureId,
+      projectId: agent?.projectId,
+      auditTrace: existing?.auditTrace,
+    });
+    await cp.dataLayer.executions.save(execution);
+    persistedSteps.push({
+      stepIndex: step.stepIndex,
+      stepName: step.step.name,
+      capability: step.step.capability,
+      status: step.status,
+      executionId: step.executionId,
+      parentExecutionId: step.parentExecutionId ?? null,
+      rootExecutionId: step.rootExecutionId,
+      runId: step.orchestration.run.runId,
+      approvalId: step.orchestration.approval?.approvalId ?? null,
+      result: step.orchestration.result ?? null,
+    });
+  }
+
+  logger.info('gateway_mission_run', {
+    operation: 'POST /v1/missions/run',
+    mission_id: result.mission.missionId,
+    workflow_id: result.workflow.workflowId,
+    root_execution_id: result.rootExecutionId,
+    status: result.status,
+    steps: String(result.steps.length),
+  });
+
+  return {
+    status:
+      result.status === 'denied'
+        ? 403
+        : result.status === 'awaiting_approval'
+          ? 202
+          : result.status === 'failed'
+            ? 500
+            : 200,
+    body: {
+      status: result.status,
+      rootExecutionId: result.rootExecutionId,
+      stoppedAtStep: result.stoppedAtStep ?? null,
+      steps: persistedSteps,
+      mission: result.mission,
+      workflow: result.workflow,
+    },
+  };
 }
 
 async function listServices(
