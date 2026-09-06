@@ -22,9 +22,8 @@ const CORE_REPO = process.env.AION_CORE_REPO ?? 'https://github.com/Ceoloo/aion-
 const DATA_REPO = process.env.AION_DATA_REPO ?? 'https://github.com/Ceoloo/aion-data';
 // aion-core tip after Mission 005 land (PR #9 merge).
 const CORE_REF = process.env.AION_CORE_REF ?? '4137d3350b138b0d03c0cf13a4c57f0fcf855dec';
-// Mission 006 aion-data branch tip (listForTenant methods). Re-pin to
-// integration tip after data PR merges.
-const DATA_REF = process.env.AION_DATA_REF ?? '085ebcfd7c5b099955bc9d9b50fc8cb5bc4342e8';
+// aion-data tip after Mission 006 land (PR #11 merge).
+const DATA_REF = process.env.AION_DATA_REF ?? '56e7cbe4c2531d7e7f4ad3b7afc7ca87933d5c51';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const vendor = resolve(root, 'vendor');
