@@ -24,6 +24,12 @@
  *   GET  /v1/executions/by-root/:rootId   — lineage tree under a root
  *   GET  /v1/services                     — list Service Catalog (?status=)
  *   GET  /v1/services/:serviceKey         — fetch one catalog service
+ *   POST /v1/evaluations                  — Mission 007 record EvaluationResult
+ *   GET  /v1/evaluations/:evaluationId    — Mission 007 fetch evaluation
+ *   GET  /v1/executions/:id/evaluation    — Mission 007 evaluation by execution
+ *   GET  /v1/scorecards                   — Mission 007 performance scorecards
+ *   GET  /v1/routing/recommend            — Mission 007 recommendation-only route
+ *   POST /v1/routing/override             — Mission 007 manual override (inspect/recommend)
  */
 import type { IncomingMessage } from 'node:http';
 import {
@@ -33,10 +39,15 @@ import {
   AuthorizationRequest,
   Capability,
   EconomicsScopeDims,
+  EvaluationId,
+  EvaluationResult,
+  ExecutionId,
   Mission,
   MissionId,
+  RoutingOverride,
   ServiceKey,
   Workflow,
+  createEvaluationResult,
   createExecutionObject,
   createMission,
   createWorkflow,
@@ -45,6 +56,7 @@ import {
   newCorrelationId,
   newRequestId,
   newRunId,
+  recommendRoute,
   type AgentActor,
   type CommandInput,
   type RiskLevel,
@@ -147,6 +159,36 @@ export async function handleGatewayRequest(
 
     if (method === 'GET' && path === '/v1/executions') {
       return await listRecentExecutions(url, cp, req);
+    }
+
+    if (method === 'POST' && path === '/v1/evaluations') {
+      return await createEvaluation(await readJsonBody(req), cp, req);
+    }
+
+    if (method === 'GET' && path === '/v1/scorecards') {
+      return await getScorecards(url, cp, req);
+    }
+
+    if (method === 'GET' && path === '/v1/routing/recommend') {
+      return await recommendRouting(url, cp, req);
+    }
+
+    if (method === 'POST' && path === '/v1/routing/override') {
+      return await setRoutingOverride(await readJsonBody(req), cp, req);
+    }
+
+    const evaluationMatch = /^\/v1\/evaluations\/([^/]+)$/.exec(path);
+    if (method === 'GET' && evaluationMatch) {
+      return await getEvaluation(decodeURIComponent(evaluationMatch[1]!), cp, req);
+    }
+
+    const exeEvalMatch = /^\/v1\/executions\/([^/]+)\/evaluation$/.exec(path);
+    if (method === 'GET' && exeEvalMatch) {
+      return await getEvaluationByExecution(
+        decodeURIComponent(exeEvalMatch[1]!),
+        cp,
+        req,
+      );
     }
 
     const exeByRootMatch = /^\/v1\/executions\/by-root\/([^/]+)$/.exec(path);
@@ -949,6 +991,255 @@ async function getScopeEconomics(
   }
   const economics = await cp.dataLayer.economics.rollupByScope(scopeParsed.data);
   return { status: 200, body: { economics } };
+}
+
+function routingOverrideKey(
+  tenantId: string,
+  capability?: string,
+  serviceKey?: string,
+): string {
+  return `${tenantId}|${capability ?? serviceKey ?? '*'}`;
+}
+
+/**
+ * Mission 007 — record a durable EvaluationResult (tenant header required).
+ * Body may be a full EvaluationResult or CreateEvaluationInput fields.
+ */
+async function createEvaluation(
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to write evaluations (Mission 007)',
+    );
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'evaluation body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  if (raw.tenantId && raw.tenantId !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot write evaluations for tenant ${String(raw.tenantId)}`,
+    );
+  }
+  let evaluation;
+  try {
+    if (raw.evaluationId) {
+      evaluation = EvaluationResult.parse({ ...raw, tenantId: callerTenant });
+    } else {
+      evaluation = createEvaluationResult({
+        ...(raw as unknown as Parameters<typeof createEvaluationResult>[0]),
+        tenantId: callerTenant,
+      });
+    }
+  } catch (err) {
+    return jsonError(
+      400,
+      'invalid_evaluation',
+      err instanceof Error ? err.message : 'evaluation failed validation',
+    );
+  }
+  await cp.dataLayer.evaluations.save(evaluation);
+  return { status: 201, body: { evaluation } };
+}
+
+async function getEvaluation(
+  evaluationIdRaw: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to read evaluations (Mission 007)',
+    );
+  }
+  const parsed = EvaluationId.safeParse(evaluationIdRaw);
+  if (!parsed.success) {
+    return jsonError(400, 'invalid_evaluation_id', 'evaluationId must be a Core EvaluationId');
+  }
+  const evaluation = await cp.dataLayer.evaluations.get(parsed.data);
+  if (!evaluation) {
+    return jsonError(404, 'evaluation_not_found', `evaluation ${evaluationIdRaw} not found`);
+  }
+  if (evaluation.tenantId && evaluation.tenantId !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot read evaluation owned by ${evaluation.tenantId}`,
+    );
+  }
+  return { status: 200, body: { evaluation } };
+}
+
+async function getEvaluationByExecution(
+  executionIdRaw: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to read evaluations (Mission 007)',
+    );
+  }
+  const parsed = ExecutionId.safeParse(executionIdRaw);
+  if (!parsed.success) {
+    return jsonError(400, 'invalid_execution_id', 'executionId must be a Core ExecutionId');
+  }
+  const evaluation = await cp.dataLayer.evaluations.getByExecutionId(parsed.data);
+  if (!evaluation) {
+    return jsonError(
+      404,
+      'evaluation_not_found',
+      `no evaluation for execution ${executionIdRaw}`,
+    );
+  }
+  if (evaluation.tenantId && evaluation.tenantId !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot read evaluation owned by ${evaluation.tenantId}`,
+    );
+  }
+  return { status: 200, body: { evaluation } };
+}
+
+async function getScorecards(
+  url: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to read scorecards (Mission 007)',
+    );
+  }
+  const params = new URL(url, 'http://localhost').searchParams;
+  const queryTenant = params.get('tenantId');
+  if (queryTenant && queryTenant !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot read scorecards for tenant ${queryTenant}`,
+    );
+  }
+  const capability = params.get('capability') ?? undefined;
+  const serviceKey = params.get('serviceKey') ?? undefined;
+  const scorecards = await cp.dataLayer.evaluations.scorecardsForTenant(callerTenant, {
+    ...(capability ? { capability } : {}),
+    ...(serviceKey ? { serviceKey } : {}),
+  });
+  return { status: 200, body: { scorecards, count: scorecards.length } };
+}
+
+/**
+ * Mission 007 — recommendation-only routing. Deterministic fallback always
+ * present; does not reorder ExecutionRegistry adapters.
+ */
+async function recommendRouting(
+  url: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required for routing recommendations (Mission 007)',
+    );
+  }
+  const params = new URL(url, 'http://localhost').searchParams;
+  const queryTenant = params.get('tenantId');
+  if (queryTenant && queryTenant !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot recommend routes for tenant ${queryTenant}`,
+    );
+  }
+  const capability = params.get('capability') ?? undefined;
+  const serviceKeyRaw = params.get('serviceKey') ?? undefined;
+  let serviceKey: ReturnType<typeof ServiceKey.parse> | undefined;
+  if (serviceKeyRaw) {
+    const sk = ServiceKey.safeParse(serviceKeyRaw);
+    if (!sk.success) {
+      return jsonError(400, 'invalid_service_key', 'serviceKey must match name@version');
+    }
+    serviceKey = sk.data;
+  }
+  const scorecards = await cp.dataLayer.evaluations.scorecardsForTenant(callerTenant, {
+    ...(capability ? { capability } : {}),
+    ...(serviceKey ? { serviceKey } : {}),
+  });
+  const override =
+    cp.routingOverrides.get(routingOverrideKey(callerTenant, capability, serviceKey)) ??
+    cp.routingOverrides.get(routingOverrideKey(callerTenant, capability)) ??
+    cp.routingOverrides.get(routingOverrideKey(callerTenant, undefined, serviceKey));
+  const recommendation = recommendRoute({
+    tenantId: callerTenant,
+    ...(capability ? { capability } : {}),
+    ...(serviceKey ? { serviceKey } : {}),
+    scorecards,
+    ...(override ? { override } : {}),
+  });
+  return { status: 200, body: { recommendation } };
+}
+
+async function setRoutingOverride(
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to set routing overrides (Mission 007)',
+    );
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'override body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  const capability =
+    typeof raw.capability === 'string' ? raw.capability : undefined;
+  const serviceKey =
+    typeof raw.serviceKey === 'string' ? raw.serviceKey : undefined;
+  const overrideParsed = RoutingOverride.safeParse(raw.override ?? raw);
+  if (!overrideParsed.success) {
+    return jsonError(
+      400,
+      'invalid_override',
+      'override requires candidate, reason, setBy, setAt',
+    );
+  }
+  const key = routingOverrideKey(callerTenant, capability, serviceKey);
+  cp.routingOverrides.set(key, overrideParsed.data);
+  return {
+    status: 200,
+    body: {
+      override: overrideParsed.data,
+      key,
+      note: 'Recommendation-only — ExecutionRegistry deterministic route remains fallback',
+    },
+  };
 }
 
 /**

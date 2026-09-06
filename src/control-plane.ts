@@ -24,6 +24,7 @@ import type {
   ExecutionRequest,
   ExecutionResult,
   Capability,
+  RoutingOverride,
 } from '@aion/core';
 import { createDataLayer, type DataLayer } from '@aion/data';
 import type { RuntimeConfig } from './config.js';
@@ -155,6 +156,11 @@ export interface ControlPlane {
   missionOrchestrator: MissionOrchestrator;
   /** Shared policy engine — Runtime authorization boundary (Mission 003). */
   policyEngine: PolicyEngine;
+  /**
+   * Mission 007 — process-local manual routing overrides (recommendation-only).
+   * Keyed by `${tenantId}|${capability||serviceKey||*}`. Not adaptive auto-routing.
+   */
+  routingOverrides: Map<string, RoutingOverride>;
   /** SELECT 1 against the app connection — the readiness probe's DB check. */
   checkDatabase(): Promise<void>;
   close(): Promise<void>;
@@ -241,6 +247,7 @@ export function buildControlPlane(
     orchestrator,
     missionOrchestrator,
     policyEngine,
+    routingOverrides: new Map(),
     async checkDatabase(): Promise<void> {
       await dataLayer.pool.query('SELECT 1');
     },

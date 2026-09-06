@@ -222,6 +222,78 @@ export class RuntimeClient {
     });
   }
 
+  /** Mission 007 — record EvaluationResult. */
+  async createEvaluation(
+    body: Record<string, unknown>,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('POST', '/v1/evaluations', {
+      body,
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 007 — fetch evaluation by id. */
+  async getEvaluation(
+    evaluationId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('GET', `/v1/evaluations/${encodeURIComponent(evaluationId)}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 007 — evaluation for an execution. */
+  async getEvaluationByExecution(
+    executionId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request(
+      'GET',
+      `/v1/executions/${encodeURIComponent(executionId)}/evaluation`,
+      { tenantId: opts?.tenantId },
+    );
+  }
+
+  /** Mission 007 — performance scorecards. */
+  async getScorecards(
+    opts?: TenantScopedRequest & { capability?: string; serviceKey?: string },
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.capability) params.set('capability', opts.capability);
+    if (opts?.serviceKey) params.set('serviceKey', opts.serviceKey);
+    if (opts?.tenantId) params.set('tenantId', opts.tenantId);
+    const qs = params.toString();
+    return this.request('GET', `/v1/scorecards${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 007 — recommendation-only routing. */
+  async recommendRoute(
+    opts?: TenantScopedRequest & { capability?: string; serviceKey?: string },
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.capability) params.set('capability', opts.capability);
+    if (opts?.serviceKey) params.set('serviceKey', opts.serviceKey);
+    if (opts?.tenantId) params.set('tenantId', opts.tenantId);
+    const qs = params.toString();
+    return this.request('GET', `/v1/routing/recommend${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 007 — manual routing override (does not auto-execute). */
+  async setRoutingOverride(
+    body: Record<string, unknown>,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('POST', '/v1/routing/override', {
+      body,
+      tenantId: opts?.tenantId,
+    });
+  }
+
   async listServices(): Promise<unknown> {
     return this.request('GET', '/v1/services');
   }
