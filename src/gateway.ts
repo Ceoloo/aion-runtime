@@ -11,6 +11,8 @@
  *   POST /v1/commands                     — submit governed work
  *                                         (capability or serviceKey)
  *   POST /v1/missions/run                 — Mission 004 multi-step orchestration
+ *   GET  /v1/missions/:missionId/economics — Mission 005 economics rollup
+ *   GET  /v1/economics                    — Mission 005 scope/holding rollup
  *   GET  /v1/runs/:runId                  — fetch run state
  *   POST /v1/approvals/:approvalId/decision — human gate decision
  *   GET  /v1/executions/:executionId      — canonical Execution Object
@@ -25,7 +27,9 @@ import {
   ApprovalDecision,
   AuthorizationRequest,
   Capability,
+  EconomicsScopeDims,
   Mission,
+  MissionId,
   ServiceKey,
   Workflow,
   createExecutionObject,
@@ -79,6 +83,19 @@ export async function handleGatewayRequest(
 
     if (method === 'POST' && path === '/v1/missions/run') {
       return await runMission(await readJsonBody(req), cp, logger);
+    }
+
+    if (method === 'GET' && path === '/v1/economics') {
+      return await getScopeEconomics(url, cp, req);
+    }
+
+    const missionEconomicsMatch = /^\/v1\/missions\/([^/]+)\/economics$/.exec(path);
+    if (method === 'GET' && missionEconomicsMatch) {
+      return await getMissionEconomics(
+        decodeURIComponent(missionEconomicsMatch[1]!),
+        cp,
+        req,
+      );
     }
 
     if (method === 'GET' && path === '/v1/services') {
@@ -394,6 +411,14 @@ async function submitCommand(
 
   const result = await cp.orchestrator.submit(input);
   const agent = actor.actorType === 'agent' ? (actor as AgentActor) : undefined;
+  const revenueAttributed =
+    typeof raw.revenueAttributed === 'number' && Number.isFinite(raw.revenueAttributed)
+      ? raw.revenueAttributed
+      : undefined;
+  const outcomeSummary =
+    typeof raw.outcomeSummary === 'string' && raw.outcomeSummary.length > 0
+      ? raw.outcomeSummary
+      : undefined;
   const execution = createExecutionObject({
     run: result.run,
     agent,
@@ -412,6 +437,8 @@ async function submitCommand(
     companyId: agent?.companyId,
     ventureId: agent?.ventureId,
     projectId: agent?.projectId,
+    ...(revenueAttributed !== undefined ? { revenueAttributed } : {}),
+    ...(outcomeSummary !== undefined ? { outcomeSummary } : {}),
   });
   await cp.dataLayer.executions.save(execution);
 
@@ -640,6 +667,82 @@ async function getExecutionsByRoot(
     status: 200,
     body: { rootExecutionId, executions, count: executions.length },
   };
+}
+
+/**
+ * Mission 005 — mission economics rollup (SQL-derived; tenant header required).
+ */
+async function getMissionEconomics(
+  missionIdRaw: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to read mission economics (Mission 005)',
+    );
+  }
+  const parsed = MissionId.safeParse(missionIdRaw);
+  if (!parsed.success) {
+    return jsonError(400, 'invalid_mission_id', 'missionId must be a Core MissionId');
+  }
+  const mission = await cp.dataLayer.missions.get(parsed.data);
+  if (!mission) {
+    return jsonError(404, 'mission_not_found', `mission ${missionIdRaw} not found`);
+  }
+  const economics = await cp.dataLayer.economics.rollupByMission(
+    parsed.data,
+    callerTenant,
+  );
+  return { status: 200, body: { economics } };
+}
+
+/**
+ * Mission 005 — scope / holding economics rollup.
+ * Query: tenantId (optional; defaults to header), companyId, ventureId, projectId.
+ * Tenant header required; query tenantId must match header when both present.
+ */
+async function getScopeEconomics(
+  url: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to read scope economics (Mission 005)',
+    );
+  }
+  const params = new URL(url, 'http://localhost').searchParams;
+  const queryTenant = params.get('tenantId');
+  if (queryTenant && queryTenant !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot roll up tenant ${queryTenant}`,
+    );
+  }
+  const scopeRaw = {
+    tenantId: queryTenant ?? callerTenant,
+    ...(params.get('companyId') ? { companyId: params.get('companyId')! } : {}),
+    ...(params.get('ventureId') ? { ventureId: params.get('ventureId')! } : {}),
+    ...(params.get('projectId') ? { projectId: params.get('projectId')! } : {}),
+  };
+  const scopeParsed = EconomicsScopeDims.safeParse(scopeRaw);
+  if (!scopeParsed.success) {
+    return jsonError(
+      400,
+      'invalid_scope',
+      'economics scope requires tenantId (and optional company/venture/project)',
+    );
+  }
+  const economics = await cp.dataLayer.economics.rollupByScope(scopeParsed.data);
+  return { status: 200, body: { economics } };
 }
 
 /**
