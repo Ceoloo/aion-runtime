@@ -94,7 +94,7 @@ function approverActor() {
 }
 
 async function main(): Promise<void> {
-  const client = new RuntimeClient({ baseUrl: BASE_URL });
+  const client = new RuntimeClient({ baseUrl: BASE_URL, tenantId: 'aion-systems' });
   const mode = process.env.PROOF_MODE ?? 'full'; // full | ab | c | d-prepare | d-resume
 
   const authorized = authorizedActor();
@@ -176,7 +176,7 @@ async function passA(
   }
 
   // Execution remains queryable as the outcome-attribution anchor.
-  const fetched = (await client.getExecution(res.execution.executionId)) as {
+  const fetched = (await client.getExecution(res.execution.executionId, { tenantId: 'aion-systems' })) as {
     execution?: { executionId?: string; cost?: { units?: number } };
   };
   const execution =
@@ -344,7 +344,7 @@ async function passDResume(
   if (resumed.status !== 'completed' || resumed.run?.runId !== runId) {
     fail('D-RESUME', `resume failed: status=${resumed.status} run=${resumed.run?.runId}`);
   }
-  const byRun = (await client.getExecutionByRun(runId)) as {
+  const byRun = (await client.getExecutionByRun(runId, { tenantId: 'aion-systems' })) as {
     execution?: { executionId?: string; cost?: { units?: number } };
   };
   if (!byRun.execution?.executionId) {

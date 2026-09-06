@@ -13,6 +13,16 @@ export interface RuntimeClientOptions {
   baseUrl: string;
   /** Optional fetch implementation (tests / custom agents). */
   fetch?: typeof fetch;
+  /**
+   * Default tenant for Mission 003 isolation on execution reads.
+   * Sent as `x-aion-tenant-id` when method-level tenantId is omitted.
+   */
+  tenantId?: string;
+}
+
+export interface TenantScopedRequest {
+  /** Caller tenant — required by gateway for GET /v1/executions* (Mission 003). */
+  tenantId?: string;
 }
 
 export interface SubmitCommandRequest {
@@ -50,14 +60,16 @@ export class RuntimeApiError extends Error {
 export class RuntimeClient {
   private readonly baseUrl: string;
   private readonly fetchFn: typeof fetch;
+  private readonly defaultTenantId?: string;
 
   constructor(options: RuntimeClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.fetchFn = options.fetch ?? fetch;
+    this.defaultTenantId = options.tenantId;
   }
 
   async submitCommand(input: SubmitCommandRequest): Promise<unknown> {
-    return this.request('POST', '/v1/commands', input);
+    return this.request('POST', '/v1/commands', { body: input });
   }
 
   async getRun(runId: string): Promise<unknown> {
@@ -74,19 +86,24 @@ export class RuntimeClient {
       actor?: Actor;
     },
   ): Promise<unknown> {
-    return this.request(
-      'POST',
-      `/v1/approvals/${encodeURIComponent(approvalId)}/decision`,
+    return this.request('POST', `/v1/approvals/${encodeURIComponent(approvalId)}/decision`, {
       body,
-    );
+    });
   }
 
-  async getExecution(executionId: string): Promise<unknown> {
-    return this.request('GET', `/v1/executions/${encodeURIComponent(executionId)}`);
+  async getExecution(
+    executionId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('GET', `/v1/executions/${encodeURIComponent(executionId)}`, {
+      tenantId: opts?.tenantId,
+    });
   }
 
-  async getExecutionByRun(runId: string): Promise<unknown> {
-    return this.request('GET', `/v1/executions/by-run/${encodeURIComponent(runId)}`);
+  async getExecutionByRun(runId: string, opts?: TenantScopedRequest): Promise<unknown> {
+    return this.request('GET', `/v1/executions/by-run/${encodeURIComponent(runId)}`, {
+      tenantId: opts?.tenantId,
+    });
   }
 
   async listServices(): Promise<unknown> {
@@ -97,11 +114,23 @@ export class RuntimeClient {
     return this.request('GET', `/v1/services/${encodeURIComponent(serviceKey)}`);
   }
 
-  private async request(method: string, path: string, body?: unknown): Promise<unknown> {
+  private async request(
+    method: string,
+    path: string,
+    options?: { body?: unknown; tenantId?: string },
+  ): Promise<unknown> {
+    const headers: Record<string, string> = {};
+    if (options?.body !== undefined) {
+      headers['content-type'] = 'application/json';
+    }
+    const tenantId = options?.tenantId ?? this.defaultTenantId;
+    if (tenantId) {
+      headers['x-aion-tenant-id'] = tenantId;
+    }
     const res = await this.fetchFn(`${this.baseUrl}${path}`, {
       method,
-      headers: body ? { 'content-type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
+      body: options?.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
     const text = await res.text();
     let parsed: unknown = {};
