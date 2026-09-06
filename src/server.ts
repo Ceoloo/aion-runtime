@@ -1,21 +1,24 @@
 /**
- * Minimal HTTP surface: health, readiness, and release metadata (aion-infra
- * §27–29). No product API, no business endpoints — this host exists to prove
- * deployability, not to serve product traffic.
+ * Minimal HTTP surface for the Runtime host.
  *
- *   GET /health/live   — liveness: process is up. Cheap, NO dependency work
- *                        (§29: "Do not make health checks trigger expensive
- *                        business execution"). Called by the platform's liveness
- *                        probe to restart a wedged process.
- *   GET /health/ready  — readiness: can we safely accept work? Checks database
- *                        connectivity. Fails (503) when the DB is unreachable so
- *                        the platform withholds traffic (§29, §62).
- *   GET /              — release metadata (git_sha / version / environment).
+ * Health / release (aion-infra §27–29):
+ *   GET /health/live   — liveness
+ *   GET /health/ready  — readiness (DB check)
+ *   GET /              — release metadata
+ *
+ * Execution Gateway — reconciled INTO this same Runtime process (not a second
+ * gateway service). See src/gateway.ts and Notion Progress Assessment Sep 2026.
+ *   POST /v1/commands
+ *   GET  /v1/runs/:runId
+ *   POST /v1/approvals/:approvalId/decision
+ *   GET  /v1/executions/:executionId
+ *   GET  /v1/executions/by-run/:runId
  */
 import http from 'node:http';
 import type { ControlPlane } from './control-plane.js';
 import type { RuntimeConfig } from './config.js';
 import type { Logger } from './logger.js';
+import { handleGatewayRequest } from './gateway.js';
 
 export interface Server {
   listen(): Promise<void>;
@@ -51,23 +54,16 @@ export function createServer(
       });
     };
 
-    if (method !== 'GET') {
-      send(405, { error: 'method_not_allowed' });
-      return;
-    }
-
-    if (url === '/health/live') {
-      // Liveness: no dependency work.
+    // Health endpoints first — cheap, GET-only.
+    if (method === 'GET' && url === '/health/live') {
       send(200, { status: 'alive', ...releaseBody });
       return;
     }
 
-    if (url === '/health/ready') {
+    if (method === 'GET' && url === '/health/ready') {
       cp.checkDatabase()
         .then(() => send(200, { status: 'ready', database: 'up', ...releaseBody }))
         .catch((err: unknown) => {
-          // Fail readiness with a clear, NON-SECRET diagnostic (§62). We report
-          // that the database is unreachable — never the connection string.
           logger.error('readiness_failed', {
             operation: 'GET /health/ready',
             status: '503',
@@ -79,12 +75,23 @@ export function createServer(
       return;
     }
 
-    if (url === '/') {
+    if (method === 'GET' && url === '/') {
       send(200, releaseBody);
       return;
     }
 
-    send(404, { error: 'not_found' });
+    // Execution Gateway (same process — not a second service).
+    void handleGatewayRequest(method, url, req, cp, logger).then((gateway) => {
+      if (gateway) {
+        send(gateway.status, gateway.body);
+        return;
+      }
+      if (method !== 'GET' && method !== 'POST') {
+        send(405, { error: 'method_not_allowed' });
+        return;
+      }
+      send(404, { error: 'not_found' });
+    });
   });
 
   return {

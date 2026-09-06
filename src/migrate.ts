@@ -54,6 +54,22 @@ async function main(): Promise<void> {
     const results = await dl.migrate();
     const applied = results.filter((r) => r.status === 'applied').length;
     log('info', 'migrations_complete', { applied, total: results.length });
+
+    // Seed Mission 001 Service Catalog v0 (idempotent). Agents invoke these
+    // keys — not ad-hoc tools — once Runtime is up.
+    log('info', 'seeding_mission_001_catalog');
+    const seed = await dl.services.seedMission001();
+    log('info', 'mission_001_catalog_ready', {
+      inserted: seed.inserted,
+      total: seed.total,
+    });
+
+    log('info', 'seeding_mission_002_catalog');
+    const seed2 = await dl.services.seedMission002();
+    log('info', 'mission_002_catalog_ready', {
+      inserted: seed2.inserted,
+      total: seed2.total,
+    });
   } catch (err) {
     // A failed migration must STOP the pipeline (§63) — never continue.
     log('error', 'migration_failed', { error: err instanceof Error ? err.message : 'unknown' });

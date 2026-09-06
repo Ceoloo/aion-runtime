@@ -4,3 +4,6 @@ vendor/
 *.log
 .acceptance*
 .DS_Store
+
+.proof-d-anchors.env*
+.proof-runtime-*.log
