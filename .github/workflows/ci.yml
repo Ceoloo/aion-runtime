@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   verify:
-    name: typecheck · build · portability · acceptance · mission001-proof · mission002-proof · mission003-proof · platform-v01-cert
+    name: typecheck · build · portability · acceptance · mission001-proof · mission002-proof · mission003-proof · mission004-proof · platform-v01-cert
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -85,6 +85,16 @@ jobs:
 
       - name: Mission 003 attack suite (tenant/domain isolation)
         run: npm run proof:mission003
+
+
+      - name: Mission 004 proof matrix (orchestration lineage)
+        env:
+          MIGRATION_DATABASE_URL: postgresql://aion_migrator:ci_migrator@localhost:5432/aion_data
+          DATABASE_URL: postgresql://aion_app:ci_app@localhost:5432/aion_data
+          DATABASE_SSL: 'false'
+          GIT_SHA: ${{ github.sha }}
+          PORT: '8094'
+        run: npm run proof:mission004
 
       - name: Platform v0.1 multi-domain certification
         env:

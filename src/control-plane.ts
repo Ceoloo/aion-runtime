@@ -9,6 +9,7 @@
  */
 import {
   Orchestrator,
+  MissionOrchestrator,
   PolicyEngine,
   ExecutionRegistry,
   ApprovalGate,
@@ -18,7 +19,12 @@ import {
   MockExecutionAdapter,
   capability,
 } from '@aion/core';
-import type { ExecutionAdapter, Capability } from '@aion/core';
+import type {
+  ExecutionAdapter,
+  ExecutionRequest,
+  ExecutionResult,
+  Capability,
+} from '@aion/core';
 import { createDataLayer, type DataLayer } from '@aion/data';
 import type { RuntimeConfig } from './config.js';
 
@@ -50,6 +56,10 @@ export const MISSION_002_CAPABILITIES: Capability[] = [
   capability('media.performance.ingest'),
 ];
 
+/** Mission 004 client-money path — mock GoHighLevel contact upsert (R1). */
+export const MISSION_004_CAPABILITIES: Capability[] = [
+  capability('client.ghl.contact.upsert'),
+];
 
 const DEFAULT_CAPABILITY_RISK: Record<string, 'R0' | 'R1' | 'R2'> = {
   'infra.smoke': 'R0',
@@ -70,7 +80,46 @@ const DEFAULT_CAPABILITY_RISK: Record<string, 'R0' | 'R1' | 'R2'> = {
   'media.asset.produce': 'R1',
   'media.post.publish': 'R2',
   'media.performance.ingest': 'R1',
+  'client.ghl.contact.upsert': 'R1',
 };
+
+/**
+ * Mock GHL contact upsert — echoes the GHL-shaped payload so Mission 004
+ * can prove provider/contact preservation on the client-money path.
+ */
+class GhlContactUpsertMockAdapter implements ExecutionAdapter {
+  readonly name = 'ghl-contact-upsert-mock';
+
+  canHandle(request: ExecutionRequest): boolean {
+    return request.capability === 'client.ghl.contact.upsert';
+  }
+
+  async execute(request: ExecutionRequest): Promise<ExecutionResult> {
+    const startedAt = new Date().toISOString();
+    const payload = request.command.payload ?? {};
+    const provider =
+      typeof payload['provider'] === 'string' ? payload['provider'] : 'ghl';
+    const completedAt = new Date().toISOString();
+    return {
+      status: 'succeeded',
+      output: {
+        stub: true,
+        source: this.name,
+        provider,
+        contact:
+          payload['contact'] && typeof payload['contact'] === 'object'
+            ? payload['contact']
+            : {},
+      },
+      executor: this.name,
+      startedAt,
+      completedAt,
+      durationMs: 5,
+      cost: { units: 3, tokens: 40 },
+      metadata: { adapter: this.name, provider },
+    };
+  }
+}
 
 function defaultAdapters(): ExecutionAdapter[] {
   return [
@@ -95,12 +144,15 @@ function defaultAdapters(): ExecutionAdapter[] {
       output: { value: { stub: true, source: 'mission-002-mock', domain: 'media' } },
       durationMs: 5,
     }),
+    new GhlContactUpsertMockAdapter(),
   ];
 }
 
 export interface ControlPlane {
   dataLayer: DataLayer;
   orchestrator: Orchestrator;
+  /** Mission 004 sequential multi-step runner over durable missions/workflows. */
+  missionOrchestrator: MissionOrchestrator;
   /** Shared policy engine — Runtime authorization boundary (Mission 003). */
   policyEngine: PolicyEngine;
   /** SELECT 1 against the app connection — the readiness probe's DB check. */
@@ -177,9 +229,17 @@ export function buildControlPlane(
     clock,
   });
 
+  const missionOrchestrator = new MissionOrchestrator({
+    orchestrator,
+    missions: dataLayer.missions,
+    workflows: dataLayer.workflows,
+    clock,
+  });
+
   return {
     dataLayer,
     orchestrator,
+    missionOrchestrator,
     policyEngine,
     async checkDatabase(): Promise<void> {
       await dataLayer.pool.query('SELECT 1');

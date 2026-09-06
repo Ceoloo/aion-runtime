@@ -39,6 +39,28 @@ export interface SubmitCommandRequest {
   payload?: Record<string, unknown>;
   riskLevel?: RiskLevel | string;
   metadata?: Record<string, unknown>;
+  /** Mission 004 lineage — optional on single-command submit. */
+  executionId?: string;
+  parentExecutionId?: string;
+  rootExecutionId?: string;
+}
+
+export interface RunMissionRequest {
+  actor: Actor;
+  /** Already-saved mission id (omit when providing inline `mission`). */
+  missionId?: string;
+  /** Already-saved workflow id (omit when providing inline `workflow`). */
+  workflowId?: string;
+  /** Inline mission object — saved before run when present. */
+  mission?: Record<string, unknown>;
+  /** Inline workflow object — saved before run when present. */
+  workflow?: Record<string, unknown>;
+  stepPayloads?: Record<string, Record<string, unknown>>;
+  resumeFromStep?: number;
+  rootExecutionId?: string;
+  parentExecutionId?: string;
+  requestIdPrefix?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface RuntimeApiErrorBody {
@@ -51,6 +73,7 @@ export class RuntimeApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly body?: unknown,
   ) {
     super(message);
     this.name = 'RuntimeApiError';
@@ -70,6 +93,11 @@ export class RuntimeClient {
 
   async submitCommand(input: SubmitCommandRequest): Promise<unknown> {
     return this.request('POST', '/v1/commands', { body: input });
+  }
+
+  /** Mission 004 — run or resume a multi-step mission orchestration. */
+  async runMission(input: RunMissionRequest): Promise<unknown> {
+    return this.request('POST', '/v1/missions/run', { body: input });
   }
 
   async getRun(runId: string): Promise<unknown> {
@@ -104,6 +132,18 @@ export class RuntimeClient {
     return this.request('GET', `/v1/executions/by-run/${encodeURIComponent(runId)}`, {
       tenantId: opts?.tenantId,
     });
+  }
+
+  /** Mission 004 — list Execution Objects under a shared root lineage tree. */
+  async getExecutionsByRoot(
+    rootExecutionId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request(
+      'GET',
+      `/v1/executions/by-root/${encodeURIComponent(rootExecutionId)}`,
+      { tenantId: opts?.tenantId },
+    );
   }
 
   async listServices(): Promise<unknown> {
@@ -147,6 +187,7 @@ export class RuntimeClient {
         res.status,
         typeof err.error === 'string' ? err.error : 'http_error',
         typeof err.message === 'string' ? err.message : `HTTP ${res.status}`,
+        parsed,
       );
     }
     return parsed;
