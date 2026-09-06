@@ -21,9 +21,9 @@ import { fileURLToPath } from 'node:url';
 const CORE_REPO = process.env.AION_CORE_REPO ?? 'https://github.com/Ceoloo/aion-core';
 const DATA_REPO = process.env.AION_DATA_REPO ?? 'https://github.com/Ceoloo/aion-data';
 // aion-core tip on Mission 004 branch (MissionOrchestrator).
-const CORE_REF = process.env.AION_CORE_REF ?? '33704f89b5ed65e20faaf09415035f3ba8b7c834';
+const CORE_REF = process.env.AION_CORE_REF ?? 'f29447bbd423640e980653eab7d840099d1b1f65';
 // aion-data tip on Mission 004 branch (workflows + lineage queries).
-const DATA_REF = process.env.AION_DATA_REF ?? '87343446bd4405b0446af4b5045855b30051808c';
+const DATA_REF = process.env.AION_DATA_REF ?? 'f3909c8b8f4576d02f057b3b66d832834b0bf9d6';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const vendor = resolve(root, 'vendor');
