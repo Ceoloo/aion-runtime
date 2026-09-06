@@ -18,7 +18,8 @@
     "acceptance": "bash scripts/local-acceptance.sh",
     "proof:mission001": "bash scripts/mission001-proof-matrix.sh",
     "proof:mission002": "bash scripts/mission002-proof-matrix.sh",
-    "certify:platform-v01": "bash scripts/platform-v01-certification.sh"
+    "certify:platform-v01": "bash scripts/platform-v01-certification.sh",
+    "proof:mission003": "bash scripts/mission003-attack-suite.sh"
   },
   "dependencies": {
     "@aion/core": "file:vendor/aion-core",
