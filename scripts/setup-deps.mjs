@@ -23,7 +23,7 @@ const DATA_REPO = process.env.AION_DATA_REPO ?? 'https://github.com/Ceoloo/aion-
 // aion-core commit — Service Catalog v0 (kept in sync with aion-data/scripts/setup-core.mjs).
 const CORE_REF = process.env.AION_CORE_REF ?? 'ef4c7aad1572ecf7525b7b668662159cf22ab5dc';
 // aion-data commit — Service Catalog v0 + Execution Object persistence.
-const DATA_REF = process.env.AION_DATA_REF ?? '859d2f6f4be5a796e6739c2c7247b935e26ca953';
+const DATA_REF = process.env.AION_DATA_REF ?? '24255b914ba3971539390739e7a92dfb64a38a17';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const vendor = resolve(root, 'vendor');
