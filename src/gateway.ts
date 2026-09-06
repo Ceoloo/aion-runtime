@@ -370,7 +370,7 @@ async function submitCommand(
 
   // Mission 003: Runtime decides ALLOW / DENY / REQUIRE_APPROVAL. Never trusts
   // agent self-claims for tenant, identity, or serviceKey authority.
-  let autonomyGrant: import('@aion/core').AutonomyGrant | undefined;
+  let autonomyGrant: AutonomyGrant | undefined;
   if (actor.actorType === 'agent') {
     const agent = actor as AgentActor;
     if (!agent.tenantId) {
