@@ -40,6 +40,17 @@ export const MISSION_001_CAPABILITIES: Capability[] = [
   capability('revenue.nextaction'),
 ];
 
+/** Mission 002 Media/G-Star capabilities — same Runtime, different domain. */
+export const MISSION_002_CAPABILITIES: Capability[] = [
+  capability('media.trend.research'),
+  capability('media.concept.generate'),
+  capability('media.script.generate'),
+  capability('media.asset.produce'),
+  capability('media.post.publish'),
+  capability('media.performance.ingest'),
+];
+
+
 const DEFAULT_CAPABILITY_RISK: Record<string, 'R0' | 'R1' | 'R2'> = {
   'infra.smoke': 'R0',
   'revenue.lead.research': 'R1',
@@ -53,6 +64,12 @@ const DEFAULT_CAPABILITY_RISK: Record<string, 'R0' | 'R1' | 'R2'> = {
   'revenue.signals': 'R1',
   'revenue.objection': 'R1',
   'revenue.nextaction': 'R1',
+  'media.trend.research': 'R1',
+  'media.concept.generate': 'R1',
+  'media.script.generate': 'R1',
+  'media.asset.produce': 'R1',
+  'media.post.publish': 'R2',
+  'media.performance.ingest': 'R1',
 };
 
 function defaultAdapters(): ExecutionAdapter[] {
@@ -69,6 +86,13 @@ function defaultAdapters(): ExecutionAdapter[] {
       // Non-zero cost so Week 3 cost/outcome attribution is observable.
       cost: { units: 5, tokens: 100 },
       output: { value: { stub: true, source: 'mission-001-mock' } },
+      durationMs: 5,
+    }),
+    new MockExecutionAdapter({
+      name: 'mission-002-mock',
+      capabilities: MISSION_002_CAPABILITIES,
+      cost: { units: 7, tokens: 120 },
+      output: { value: { stub: true, source: 'mission-002-mock', domain: 'media' } },
       durationMs: 5,
     }),
   ];
@@ -126,7 +150,7 @@ export function buildControlPlane(
   // R2 capabilities must be explicitly gated — risk classification alone does
   // not pause for approval (PolicyEngine.requiresApproval). Catalog marks
   // revenue.followup.execute as approvalRequired; honor that here.
-  const gatedCapabilities = MISSION_001_CAPABILITIES.filter(
+  const gatedCapabilities = [...MISSION_001_CAPABILITIES, ...MISSION_002_CAPABILITIES].filter(
     (cap) => DEFAULT_CAPABILITY_RISK[cap] === 'R2',
   );
   const policyEngine = new PolicyEngine(
