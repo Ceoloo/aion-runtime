@@ -39,6 +39,10 @@ export interface SubmitCommandRequest {
   payload?: Record<string, unknown>;
   riskLevel?: RiskLevel | string;
   metadata?: Record<string, unknown>;
+  /** Mission 005 — attributed economic value stored on the Execution Object. */
+  revenueAttributed?: number;
+  /** Optional human-readable outcome summary on the Execution Object. */
+  outcomeSummary?: string;
   /** Mission 004 lineage — optional on single-command submit. */
   executionId?: string;
   parentExecutionId?: string;
@@ -144,6 +148,42 @@ export class RuntimeClient {
       `/v1/executions/by-root/${encodeURIComponent(rootExecutionId)}`,
       { tenantId: opts?.tenantId },
     );
+  }
+
+  /** Mission 005 — mission-level economics rollup (tenant header required). */
+  async getMissionEconomics(
+    missionId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request(
+      'GET',
+      `/v1/missions/${encodeURIComponent(missionId)}/economics`,
+      { tenantId: opts?.tenantId },
+    );
+  }
+
+  /**
+   * Mission 005 — scope / holding economics rollup.
+   * Holding = tenant aggregate; optional company/venture/project dims.
+   */
+  async getScopeEconomics(
+    scope: {
+      tenantId?: string;
+      companyId?: string;
+      ventureId?: string;
+      projectId?: string;
+    } = {},
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (scope.tenantId) params.set('tenantId', scope.tenantId);
+    if (scope.companyId) params.set('companyId', scope.companyId);
+    if (scope.ventureId) params.set('ventureId', scope.ventureId);
+    if (scope.projectId) params.set('projectId', scope.projectId);
+    const qs = params.toString();
+    return this.request('GET', `/v1/economics${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId ?? scope.tenantId,
+    });
   }
 
   async listServices(): Promise<unknown> {
