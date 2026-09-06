@@ -11,10 +11,14 @@
  *   POST /v1/commands                     — submit governed work
  *                                         (capability or serviceKey)
  *   POST /v1/missions/run                 — Mission 004 multi-step orchestration
+ *   GET  /v1/missions                     — Mission 006 tenant mission list
+ *   GET  /v1/missions/:missionId          — Mission 006 mission detail (tenant-gated)
  *   GET  /v1/missions/:missionId/economics — Mission 005 economics rollup
  *   GET  /v1/economics                    — Mission 005 scope/holding rollup
  *   GET  /v1/runs/:runId                  — fetch run state
+ *   GET  /v1/approvals                    — Mission 006 tenant approval queue
  *   POST /v1/approvals/:approvalId/decision — human gate decision
+ *   GET  /v1/executions                   — Mission 006 recent tenant executions
  *   GET  /v1/executions/:executionId      — canonical Execution Object
  *   GET  /v1/executions/by-run/:runId     — Execution Object by run
  *   GET  /v1/executions/by-root/:rootId   — lineage tree under a root
@@ -25,6 +29,7 @@ import type { IncomingMessage } from 'node:http';
 import {
   Actor,
   ApprovalDecision,
+  ApprovalStatus,
   AuthorizationRequest,
   Capability,
   EconomicsScopeDims,
@@ -90,6 +95,10 @@ export async function handleGatewayRequest(
       return await runMission(await readJsonBody(req), cp, logger);
     }
 
+    if (method === 'GET' && path === '/v1/missions') {
+      return await listMissions(cp, req);
+    }
+
     if (method === 'GET' && path === '/v1/economics') {
       return await getScopeEconomics(url, cp, req);
     }
@@ -101,6 +110,11 @@ export async function handleGatewayRequest(
         cp,
         req,
       );
+    }
+
+    const missionMatch = /^\/v1\/missions\/([^/]+)$/.exec(path);
+    if (method === 'GET' && missionMatch) {
+      return await getMission(decodeURIComponent(missionMatch[1]!), cp, req);
     }
 
     if (method === 'GET' && path === '/v1/services') {
@@ -122,9 +136,17 @@ export async function handleGatewayRequest(
       return await getRun(runMatch[1]!, cp);
     }
 
+    if (method === 'GET' && path === '/v1/approvals') {
+      return await listApprovals(url, cp, req);
+    }
+
     const approvalMatch = /^\/v1\/approvals\/([^/]+)\/decision$/.exec(path);
     if (method === 'POST' && approvalMatch) {
       return await decideApproval(approvalMatch[1]!, await readJsonBody(req), cp, logger);
+    }
+
+    if (method === 'GET' && path === '/v1/executions') {
+      return await listRecentExecutions(url, cp, req);
     }
 
     const exeByRootMatch = /^\/v1\/executions\/by-root\/([^/]+)$/.exec(path);
@@ -734,6 +756,123 @@ async function getExecutionsByRoot(
     status: 200,
     body: { rootExecutionId, executions, count: executions.length },
   };
+}
+
+/**
+ * Mission 006 — list missions referenced by tenant executions.
+ */
+async function listMissions(
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to list missions (Mission 006)',
+    );
+  }
+  const missions = await cp.dataLayer.missions.listForTenant(callerTenant);
+  return { status: 200, body: { missions } };
+}
+
+/**
+ * Mission 006 — fetch one mission when the tenant has any execution referencing it.
+ */
+async function getMission(
+  missionIdRaw: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to read missions (Mission 006)',
+    );
+  }
+  const parsed = MissionId.safeParse(missionIdRaw);
+  if (!parsed.success) {
+    return jsonError(400, 'invalid_mission_id', 'missionId must be a Core MissionId');
+  }
+  const mission = await cp.dataLayer.missions.get(parsed.data);
+  if (!mission) {
+    return jsonError(404, 'mission_not_found', `mission ${missionIdRaw} not found`);
+  }
+  const tenantMissions = await cp.dataLayer.missions.listForTenant(callerTenant);
+  if (!tenantMissions.some((m) => m.missionId === mission.missionId)) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot read mission ${missionIdRaw}`,
+    );
+  }
+  return { status: 200, body: { mission } };
+}
+
+/**
+ * Mission 006 — recent executions for the caller tenant.
+ */
+async function listRecentExecutions(
+  url: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to list executions (Mission 006)',
+    );
+  }
+  const params = new URL(url, 'http://localhost').searchParams;
+  const limitRaw = params.get('limit');
+  const limit = limitRaw ? Number(limitRaw) : 50;
+  if (!Number.isFinite(limit) || limit < 1) {
+    return jsonError(400, 'invalid_limit', 'limit must be a positive number');
+  }
+  const executions = await cp.dataLayer.executions.listRecentForTenant(
+    callerTenant,
+    Math.trunc(limit),
+  );
+  return { status: 200, body: { executions, count: executions.length } };
+}
+
+/**
+ * Mission 006 — bounded approval inspect queue for the caller tenant.
+ */
+async function listApprovals(
+  url: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to list approvals (Mission 006)',
+    );
+  }
+  const params = new URL(url, 'http://localhost').searchParams;
+  const statusRaw = params.get('status');
+  let status: ApprovalStatus | undefined;
+  if (statusRaw) {
+    const parsed = ApprovalStatus.safeParse(statusRaw);
+    if (!parsed.success) {
+      return jsonError(
+        400,
+        'invalid_status',
+        'status must be pending, granted, or rejected',
+      );
+    }
+    status = parsed.data;
+  }
+  const approvals = await cp.dataLayer.approvals.listForTenant(callerTenant, status);
+  return { status: 200, body: { approvals, count: approvals.length } };
 }
 
 /**

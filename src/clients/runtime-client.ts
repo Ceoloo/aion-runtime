@@ -186,6 +186,42 @@ export class RuntimeClient {
     });
   }
 
+  /** Mission 006 — list missions referenced by the caller tenant. */
+  async listMissions(opts?: TenantScopedRequest): Promise<unknown> {
+    return this.request('GET', '/v1/missions', { tenantId: opts?.tenantId });
+  }
+
+  /** Mission 006 — fetch one mission (tenant-gated via executions). */
+  async getMission(missionId: string, opts?: TenantScopedRequest): Promise<unknown> {
+    return this.request('GET', `/v1/missions/${encodeURIComponent(missionId)}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 006 — recent executions for the caller tenant. */
+  async listExecutions(
+    opts?: TenantScopedRequest & { limit?: number },
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    return this.request('GET', `/v1/executions${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 006 — approval inspect queue for the caller tenant. */
+  async listApprovals(
+    opts?: TenantScopedRequest & { status?: 'pending' | 'granted' | 'rejected' },
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.status) params.set('status', opts.status);
+    const qs = params.toString();
+    return this.request('GET', `/v1/approvals${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
   async listServices(): Promise<unknown> {
     return this.request('GET', '/v1/services');
   }
