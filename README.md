@@ -23,10 +23,14 @@ AION Data (adapters)┘        composition root         (aion-infra profiles dep
 2. initializes **AION Core** over **AION Data**'s durable Postgres adapters;
 3. connects to PostgreSQL as the least-privileged **`aion_app`** role;
 4. exposes **liveness** (`/health/live`) and **readiness** (`/health/ready`, which checks DB connectivity);
-5. emits **structured JSON logs** to stdout/stderr with release metadata;
-6. optionally runs **one controlled, non-destructive Core lifecycle** as a boot self-check;
-7. **shuts down gracefully** on `SIGTERM`;
-8. provides a separate **migration entrypoint** (`node dist/migrate.js`) that runs aion-data's authoritative runner and applies the least-privilege grants.
+5. exposes the **Execution Gateway** HTTP surface on this same process (not a second gateway):
+   `POST /v1/commands`, `GET /v1/runs/:id`, `POST /v1/approvals/:id/decision`,
+   `GET /v1/executions/:id`, `GET /v1/executions/by-run/:id` — creating canonical
+   Execution Objects (`aion_execution`) with agent identity fields;
+6. emits **structured JSON logs** to stdout/stderr with release metadata;
+7. optionally runs **one controlled, non-destructive Core lifecycle** as a boot self-check;
+8. **shuts down gracefully** on `SIGTERM`;
+9. provides a separate **migration entrypoint** (`node dist/migrate.js`) that runs aion-data's authoritative runner and applies the least-privilege grants.
 
 ## Boundaries (ADR-002)
 
@@ -47,6 +51,7 @@ contracts are never forked.
 | Liveness | `GET /health/live` → `200` while healthy; no dependency work. |
 | Readiness | `GET /health/ready` → `200` only when the DB is reachable; else `503`. |
 | Release info | `GET /` → `{ git_sha, service_version, build_time, environment }`. |
+| Execution Gateway | Same process. `POST /v1/commands` submits governed work; `GET /v1/runs/:id` / `GET /v1/executions/:id` read state; `POST /v1/approvals/:id/decision` resumes gated runs. Creates durable `aion_execution` records. |
 | Config | env only: `DATABASE_URL` (required), `AION_ENVIRONMENT`, `PORT`, `LOG_LEVEL`, `DATABASE_SSL`, release vars. |
 | Credentials | app role only. Must **never** receive `MIGRATION_DATABASE_URL`. |
 | Migrations | not run by the long-running host; use `node dist/migrate.js` (migration job). |

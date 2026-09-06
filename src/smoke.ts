@@ -9,7 +9,7 @@
  * destructive actions"). Test data is identifiable (actor/mission names carry a
  * clear marker) and lives only in the events/telemetry logs.
  */
-import { createAgentActor } from '@aion/core';
+import { createAgentActor, createExecutionObject } from '@aion/core';
 import type { ControlPlane } from './control-plane.js';
 import { SMOKE_CAPABILITY } from './control-plane.js';
 
@@ -25,8 +25,12 @@ export async function runSmoke(cp: ControlPlane): Promise<SmokeResult> {
     name: 'InfraSmokeAgent',
     purpose: 'Phase 3 deployability self-check — non-destructive.',
     owner: 'aion-infra',
+    domain: 'infra',
+    role: 'smoke',
+    tenantId: 'aion-platform',
     permissions: [SMOKE_CAPABILITY],
     maxRiskLevel: 'R1',
+    autonomyLevel: 'L1',
   });
 
   // Every governed action is attributable to a registered actor (no ambient
@@ -40,6 +44,10 @@ export async function runSmoke(cp: ControlPlane): Promise<SmokeResult> {
     capability: SMOKE_CAPABILITY,
     metadata: { source: 'aion-infra', kind: 'deployability-smoke' },
   });
+
+  // Persist the canonical Execution Object (gateway path does the same).
+  const execution = createExecutionObject({ run: result.run, agent: actor, result: result.result });
+  await cp.dataLayer.executions.save(execution);
 
   const ok = result.status === 'completed';
   return {
