@@ -25,6 +25,55 @@ import type { RuntimeConfig } from './config.js';
 /** The low-risk capability used by the boot self-check (aion-infra §45). */
 export const SMOKE_CAPABILITY: Capability = capability('infra.smoke');
 
+/** Mission 001 revenue capabilities (pipeline + live-call Copilot). */
+export const MISSION_001_CAPABILITIES: Capability[] = [
+  capability('revenue.lead.research'),
+  capability('revenue.lead.enrich'),
+  capability('revenue.lead.score'),
+  capability('revenue.outreach.generate'),
+  capability('revenue.followup.execute'),
+  capability('revenue.context'),
+  capability('revenue.extraction'),
+  capability('revenue.conversationstate'),
+  capability('revenue.signals'),
+  capability('revenue.objection'),
+  capability('revenue.nextaction'),
+];
+
+const DEFAULT_CAPABILITY_RISK: Record<string, 'R0' | 'R1' | 'R2'> = {
+  'infra.smoke': 'R0',
+  'revenue.lead.research': 'R1',
+  'revenue.lead.enrich': 'R1',
+  'revenue.lead.score': 'R1',
+  'revenue.outreach.generate': 'R1',
+  'revenue.followup.execute': 'R2',
+  'revenue.context': 'R1',
+  'revenue.extraction': 'R1',
+  'revenue.conversationstate': 'R1',
+  'revenue.signals': 'R1',
+  'revenue.objection': 'R1',
+  'revenue.nextaction': 'R1',
+};
+
+function defaultAdapters(): ExecutionAdapter[] {
+  return [
+    new MockExecutionAdapter({
+      name: 'smoke-mock',
+      capabilities: [SMOKE_CAPABILITY],
+      cost: { units: 1 },
+      output: { value: { ok: true }, message: 'smoke ok' },
+    }),
+    new MockExecutionAdapter({
+      name: 'mission-001-mock',
+      capabilities: MISSION_001_CAPABILITIES,
+      // Non-zero cost so Week 3 cost/outcome attribution is observable.
+      cost: { units: 5, tokens: 100 },
+      output: { value: { stub: true, source: 'mission-001-mock' } },
+      durationMs: 5,
+    }),
+  ];
+}
+
 export interface ControlPlane {
   dataLayer: DataLayer;
   orchestrator: Orchestrator;
@@ -40,7 +89,7 @@ export interface ControlPlane {
  */
 export function buildControlPlane(
   config: RuntimeConfig,
-  adapters: ExecutionAdapter[] = [new MockExecutionAdapter({ capabilities: [SMOKE_CAPABILITY] })],
+  adapters: ExecutionAdapter[] = defaultAdapters(),
 ): ControlPlane {
   const dataLayer = createDataLayer({
     connectionString: config.databaseUrl,
@@ -75,7 +124,7 @@ export function buildControlPlane(
   const events = new EventEmitter(dataLayer.events, clock);
   const telemetry = new Telemetry(dataLayer.telemetry, clock);
   const policyEngine = new PolicyEngine(
-    { risk: { capabilityRisk: { 'infra.smoke': 'R0' } } },
+    { risk: { capabilityRisk: DEFAULT_CAPABILITY_RISK } },
     { clock },
   );
   const approvalGate = new ApprovalGate(dataLayer.approvals, clock);
