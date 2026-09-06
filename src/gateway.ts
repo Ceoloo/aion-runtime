@@ -21,6 +21,7 @@ import type { IncomingMessage } from 'node:http';
 import {
   Actor,
   ApprovalDecision,
+  AuthorizationRequest,
   Capability,
   ServiceKey,
   createExecutionObject,
@@ -96,12 +97,12 @@ export async function handleGatewayRequest(
 
     const exeMatch = /^\/v1\/executions\/([^/]+)$/.exec(path);
     if (method === 'GET' && exeMatch) {
-      return await getExecution(exeMatch[1]!, cp);
+      return await getExecution(exeMatch[1]!, cp, req);
     }
 
     const exeByRunMatch = /^\/v1\/executions\/by-run\/([^/]+)$/.exec(path);
     if (method === 'GET' && exeByRunMatch) {
-      return await getExecutionByRun(exeByRunMatch[1]!, cp);
+      return await getExecutionByRun(exeByRunMatch[1]!, cp, req);
     }
   } catch (err) {
     if (err instanceof SyntaxError) {
@@ -233,6 +234,53 @@ async function submitCommand(
     }
   }
 
+  // Mission 003: Runtime decides ALLOW / DENY / REQUIRE_APPROVAL. Never trusts
+  // agent self-claims for tenant, identity, or serviceKey authority.
+  if (actor.actorType === 'agent') {
+    const agent = actor as AgentActor;
+    if (!agent.tenantId) {
+      return jsonError(
+        403,
+        'tenant_required',
+        'agent-driven commands require actor.tenantId (Mission 003 isolation)',
+      );
+    }
+    const claimedAgentId =
+      typeof raw.claimedAgentId === 'string' ? raw.claimedAgentId : agent.agentId;
+    const resourceTenantId =
+      typeof raw.resourceTenantId === 'string' ? raw.resourceTenantId : undefined;
+    const authReq = AuthorizationRequest.parse({
+      agentId: claimedAgentId,
+      ...(agent.agentUri ? { agentUri: agent.agentUri } : {}),
+      tenantId: agent.tenantId,
+      ...(agent.companyId ? { companyId: agent.companyId } : {}),
+      ...(catalogServiceKey ? { serviceKey: catalogServiceKey } : {}),
+      capability: cap,
+      action: 'invoke',
+      permissions: agent.permissions.map(String),
+      ...(resourceTenantId ? { resourceTenantId } : {}),
+      ...(typeof raw.approvalId === 'string' ? { approvalId: raw.approvalId } : {}),
+      ...(typeof raw.riskLevel === 'string'
+        ? { riskLevel: raw.riskLevel }
+        : catalogRisk
+          ? { riskLevel: catalogRisk }
+          : {}),
+    });
+    let approval;
+    if (typeof raw.approvalId === 'string') {
+      approval = await cp.dataLayer.approvals.get(raw.approvalId as never);
+    }
+    const authz = cp.policyEngine.authorize(authReq, {
+      actor,
+      ...(approval ? { approval } : {}),
+      ...(catalogServiceKey ? { resolvedServiceKey: catalogServiceKey } : {}),
+    });
+    if (authz.decision === 'DENY') {
+      return jsonError(403, 'authorization_denied', authz.reason);
+    }
+    // REQUIRE_APPROVAL is still handled by the orchestrator / catalog gate below.
+  }
+
   // Submit idempotency: same requestId returns the original run/execution
   // without creating a second execution (approval/retry safety).
   if (typeof raw.requestId === 'string' && raw.requestId.length > 0) {
@@ -331,6 +379,9 @@ async function submitCommand(
     agent,
     result: result.result,
     tenantId: agent?.tenantId,
+    companyId: agent?.companyId,
+    ventureId: agent?.ventureId,
+    projectId: agent?.projectId,
   });
   await cp.dataLayer.executions.save(execution);
 
@@ -459,19 +510,64 @@ async function decideApproval(
   };
 }
 
-async function getExecution(executionId: string, cp: ControlPlane): Promise<GatewayResponse> {
+function callerTenantId(req: IncomingMessage): string | undefined {
+  const header = req.headers['x-aion-tenant-id'];
+  if (typeof header === 'string' && header.length > 0) return header;
+  if (Array.isArray(header) && header[0]) return header[0];
+  return undefined;
+}
+
+/**
+ * Mission 003: cross-tenant execution reads are DENY at the platform boundary.
+ * Callers must present `x-aion-tenant-id` matching the execution's tenant.
+ */
+function assertExecutionTenantAccess(
+  execution: { tenantId?: string },
+  req: IncomingMessage,
+): GatewayResponse | null {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to read executions (Mission 003)',
+    );
+  }
+  if (execution.tenantId && execution.tenantId !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot read execution owned by ${execution.tenantId}`,
+    );
+  }
+  return null;
+}
+
+async function getExecution(
+  executionId: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
   const execution = await cp.dataLayer.executions.get(executionId as never);
   if (!execution) {
     return jsonError(404, 'execution_not_found', `execution ${executionId} not found`);
   }
+  const denied = assertExecutionTenantAccess(execution, req);
+  if (denied) return denied;
   return { status: 200, body: { execution } };
 }
 
-async function getExecutionByRun(runId: string, cp: ControlPlane): Promise<GatewayResponse> {
+async function getExecutionByRun(
+  runId: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
   const execution = await cp.dataLayer.executions.getByRunId(runId as never);
   if (!execution) {
     return jsonError(404, 'execution_not_found', `no execution for run ${runId}`);
   }
+  const denied = assertExecutionTenantAccess(execution, req);
+  if (denied) return denied;
   return { status: 200, body: { execution } };
 }
 

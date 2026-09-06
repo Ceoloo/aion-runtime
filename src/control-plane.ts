@@ -101,6 +101,8 @@ function defaultAdapters(): ExecutionAdapter[] {
 export interface ControlPlane {
   dataLayer: DataLayer;
   orchestrator: Orchestrator;
+  /** Shared policy engine — Runtime authorization boundary (Mission 003). */
+  policyEngine: PolicyEngine;
   /** SELECT 1 against the app connection — the readiness probe's DB check. */
   checkDatabase(): Promise<void>;
   close(): Promise<void>;
@@ -178,6 +180,7 @@ export function buildControlPlane(
   return {
     dataLayer,
     orchestrator,
+    policyEngine,
     async checkDatabase(): Promise<void> {
       await dataLayer.pool.query('SELECT 1');
     },

@@ -354,10 +354,10 @@ async function certAttribution(client: RuntimeClient): Promise<void> {
     fail('CERT-ATTRIBUTION', 'domains must not share the same executionId');
   }
 
-  const revFetched = (await client.getExecution(revExecId)) as {
+  const revFetched = (await client.getExecution(revExecId, { tenantId: 'aion-systems' })) as {
     execution?: Record<string, unknown> & { executionId?: string };
   };
-  const medFetched = (await client.getExecution(medExecId)) as {
+  const medFetched = (await client.getExecution(medExecId, { tenantId: 'aion-media' })) as {
     execution?: Record<string, unknown> & { executionId?: string };
   };
   const revE = revFetched.execution ?? (revFetched as { executionId?: string });
@@ -538,10 +538,10 @@ async function durabilityResume(client: RuntimeClient): Promise<void> {
     fail('CERT-DURABILITY', `media resume failed: ${medResumed.status}`);
   }
 
-  const revByRun = (await client.getExecutionByRun(revRunId)) as {
+  const revByRun = (await client.getExecutionByRun(revRunId, { tenantId: 'aion-systems' })) as {
     execution?: { executionId?: string; cost?: { units?: number } };
   };
-  const medByRun = (await client.getExecutionByRun(medRunId)) as {
+  const medByRun = (await client.getExecutionByRun(medRunId, { tenantId: 'aion-media' })) as {
     execution?: { executionId?: string; cost?: { units?: number } };
   };
   const revUnits = Number(revByRun.execution?.cost?.units ?? revResumed.result?.cost?.units ?? 0);
