@@ -9,16 +9,20 @@
  *
  * Routes:
  *   POST /v1/commands                     — submit governed work
+ *                                         (capability or serviceKey)
  *   GET  /v1/runs/:runId                  — fetch run state
  *   POST /v1/approvals/:approvalId/decision — human gate decision
  *   GET  /v1/executions/:executionId      — canonical Execution Object
  *   GET  /v1/executions/by-run/:runId     — Execution Object by run
+ *   GET  /v1/services                     — list Service Catalog (?status=)
+ *   GET  /v1/services/:serviceKey         — fetch one catalog service
  */
 import type { IncomingMessage } from 'node:http';
 import {
   Actor,
   ApprovalDecision,
   Capability,
+  ServiceKey,
   createExecutionObject,
   type AgentActor,
   type CommandInput,
@@ -63,6 +67,20 @@ export async function handleGatewayRequest(
   try {
     if (method === 'POST' && path === '/v1/commands') {
       return await submitCommand(await readJsonBody(req), cp, logger);
+    }
+
+    if (method === 'GET' && path === '/v1/services') {
+      const statusParam = new URL(url, 'http://localhost').searchParams.get('status');
+      const status =
+        statusParam === 'all' || statusParam === 'deprecated' || statusParam === 'active'
+          ? statusParam
+          : 'active';
+      return await listServices(cp, status);
+    }
+
+    const serviceMatch = /^\/v1\/services\/([^/]+)$/.exec(path);
+    if (method === 'GET' && serviceMatch) {
+      return await getService(decodeURIComponent(serviceMatch[1]!), cp);
     }
 
     const runMatch = /^\/v1\/runs\/([^/]+)$/.exec(path);
@@ -121,30 +139,91 @@ async function submitCommand(
   if (typeof raw.name !== 'string' || raw.name.length < 1) {
     return jsonError(400, 'invalid_name', 'name is required');
   }
-  const capParsed = Capability.safeParse(raw.capability);
-  if (!capParsed.success) {
-    return jsonError(400, 'invalid_capability', 'capability must be a dotted capability id');
+
+  // Prefer Service Catalog resolution (serviceKey → capability). Direct
+  // capability remains for smoke / low-level callers.
+  let cap: Capability;
+  let catalogServiceKey: string | undefined;
+  let catalogRisk: RiskLevel | undefined;
+  let catalogWorkflowId: string | undefined;
+
+  if (typeof raw.serviceKey === 'string' && raw.serviceKey.length > 0) {
+    const keyParsed = ServiceKey.safeParse(raw.serviceKey);
+    if (!keyParsed.success) {
+      return jsonError(
+        400,
+        'invalid_service_key',
+        'serviceKey must be name@version, e.g. revenue.lead.research@1',
+      );
+    }
+    const service = await cp.dataLayer.services.getByKey(keyParsed.data);
+    if (!service) {
+      return jsonError(404, 'service_not_found', `service ${keyParsed.data} not in catalog`);
+    }
+    if (service.status !== 'active') {
+      return jsonError(409, 'service_deprecated', `service ${keyParsed.data} is deprecated`);
+    }
+    if (typeof raw.capability === 'string' && raw.capability.length > 0) {
+      const direct = Capability.safeParse(raw.capability);
+      if (direct.success && direct.data !== service.capability) {
+        return jsonError(
+          400,
+          'capability_mismatch',
+          `capability ${direct.data} does not match service ${service.serviceKey} → ${service.capability}`,
+        );
+      }
+    }
+    cap = service.capability;
+    catalogServiceKey = service.serviceKey;
+    catalogRisk = service.riskLevel;
+    catalogWorkflowId = service.workflowId;
+  } else {
+    const capParsed = Capability.safeParse(raw.capability);
+    if (!capParsed.success) {
+      return jsonError(
+        400,
+        'invalid_capability',
+        'capability or serviceKey is required (prefer serviceKey)',
+      );
+    }
+    cap = capParsed.data;
   }
-  const cap = capParsed.data;
 
   // Every governed action is attributable to a registered actor.
   await cp.dataLayer.actors.save(actor);
+
+  const metadata: Record<string, unknown> = {
+    ...(raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
+      ? (raw.metadata as Record<string, unknown>)
+      : {}),
+    ...(catalogServiceKey ? { serviceKey: catalogServiceKey } : {}),
+  };
 
   const input: CommandInput = {
     name: raw.name,
     actor,
     capability: cap,
-    ...(typeof raw.requestId === 'string' ? { requestId: raw.requestId as CommandInput['requestId'] } : {}),
-    ...(typeof raw.missionId === 'string' ? { missionId: raw.missionId as CommandInput['missionId'] } : {}),
-    ...(typeof raw.workflowId === 'string' ? { workflowId: raw.workflowId as CommandInput['workflowId'] } : {}),
+    ...(typeof raw.requestId === 'string'
+      ? { requestId: raw.requestId as CommandInput['requestId'] }
+      : {}),
+    ...(typeof raw.missionId === 'string'
+      ? { missionId: raw.missionId as CommandInput['missionId'] }
+      : {}),
+    ...(typeof raw.workflowId === 'string'
+      ? { workflowId: raw.workflowId as CommandInput['workflowId'] }
+      : catalogWorkflowId
+        ? { workflowId: catalogWorkflowId as CommandInput['workflowId'] }
+        : {}),
     ...(typeof raw.toolId === 'string' ? { toolId: raw.toolId as CommandInput['toolId'] } : {}),
     ...(raw.payload && typeof raw.payload === 'object' && !Array.isArray(raw.payload)
       ? { payload: raw.payload as Record<string, unknown> }
       : {}),
-    ...(typeof raw.riskLevel === 'string' ? { riskLevel: raw.riskLevel as RiskLevel } : {}),
-    ...(raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
-      ? { metadata: raw.metadata as Record<string, unknown> }
-      : {}),
+    ...(typeof raw.riskLevel === 'string'
+      ? { riskLevel: raw.riskLevel as RiskLevel }
+      : catalogRisk
+        ? { riskLevel: catalogRisk }
+        : {}),
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
   };
 
   const result = await cp.orchestrator.submit(input);
@@ -162,6 +241,7 @@ async function submitCommand(
     run_id: result.run.runId,
     execution_id: execution.executionId,
     status: result.status,
+    ...(catalogServiceKey ? { service_key: catalogServiceKey } : {}),
   });
 
   return {
@@ -202,7 +282,11 @@ async function decideApproval(
     ...(typeof raw.note === 'string' ? { note: raw.note } : {}),
   });
   if (!parsed.success) {
-    return jsonError(400, 'invalid_decision', 'decision must include approve (boolean) and decidedBy (actor id)');
+    return jsonError(
+      400,
+      'invalid_decision',
+      'decision must include approve (boolean) and decidedBy (actor id)',
+    );
   }
 
   const result = await cp.orchestrator.resume(parsed.data);
@@ -259,4 +343,28 @@ async function getExecutionByRun(runId: string, cp: ControlPlane): Promise<Gatew
     return jsonError(404, 'execution_not_found', `no execution for run ${runId}`);
   }
   return { status: 200, body: { execution } };
+}
+
+async function listServices(
+  cp: ControlPlane,
+  status: 'active' | 'deprecated' | 'all',
+): Promise<GatewayResponse> {
+  const services = await cp.dataLayer.services.list(status);
+  return { status: 200, body: { services, count: services.length } };
+}
+
+async function getService(serviceKey: string, cp: ControlPlane): Promise<GatewayResponse> {
+  const keyParsed = ServiceKey.safeParse(serviceKey);
+  if (!keyParsed.success) {
+    return jsonError(
+      400,
+      'invalid_service_key',
+      'serviceKey must be name@version, e.g. revenue.lead.research@1',
+    );
+  }
+  const service = await cp.dataLayer.services.getByKey(keyParsed.data);
+  if (!service) {
+    return jsonError(404, 'service_not_found', `service ${keyParsed.data} not in catalog`);
+  }
+  return { status: 200, body: { service } };
 }

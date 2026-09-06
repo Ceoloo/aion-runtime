@@ -24,13 +24,18 @@ AION Data (adapters)┘        composition root         (aion-infra profiles dep
 3. connects to PostgreSQL as the least-privileged **`aion_app`** role;
 4. exposes **liveness** (`/health/live`) and **readiness** (`/health/ready`, which checks DB connectivity);
 5. exposes the **Execution Gateway** HTTP surface on this same process (not a second gateway):
-   `POST /v1/commands`, `GET /v1/runs/:id`, `POST /v1/approvals/:id/decision`,
-   `GET /v1/executions/:id`, `GET /v1/executions/by-run/:id` — creating canonical
-   Execution Objects (`aion_execution`) with agent identity fields;
-6. emits **structured JSON logs** to stdout/stderr with release metadata;
-7. optionally runs **one controlled, non-destructive Core lifecycle** as a boot self-check;
-8. **shuts down gracefully** on `SIGTERM`;
-9. provides a separate **migration entrypoint** (`node dist/migrate.js`) that runs aion-data's authoritative runner and applies the least-privilege grants.
+   `POST /v1/commands` (capability **or** `serviceKey`), `GET /v1/runs/:id`,
+   `POST /v1/approvals/:id/decision`, `GET /v1/executions/:id`,
+   `GET /v1/executions/by-run/:id`, `GET /v1/services`, `GET /v1/services/:serviceKey`
+   — creating canonical Execution Objects (`aion_execution`) with agent identity;
+6. ships **Runtime clients** (`src/clients`) so Grok and peer workers submit via the
+   gateway (`serviceKey` → catalog → capability) instead of calling tools directly;
+7. emits **structured JSON logs** to stdout/stderr with release metadata;
+8. optionally runs **one controlled, non-destructive Core lifecycle** as a boot self-check;
+9. **shuts down gracefully** on `SIGTERM`;
+10. provides a separate **migration entrypoint** (`node dist/migrate.js`) that runs
+    aion-data's authoritative runner, seeds Mission 001 Service Catalog v0, and
+    applies the least-privilege grants.
 
 ## Boundaries (ADR-002)
 
@@ -51,7 +56,8 @@ contracts are never forked.
 | Liveness | `GET /health/live` → `200` while healthy; no dependency work. |
 | Readiness | `GET /health/ready` → `200` only when the DB is reachable; else `503`. |
 | Release info | `GET /` → `{ git_sha, service_version, build_time, environment }`. |
-| Execution Gateway | Same process. `POST /v1/commands` submits governed work; `GET /v1/runs/:id` / `GET /v1/executions/:id` read state; `POST /v1/approvals/:id/decision` resumes gated runs. Creates durable `aion_execution` records. |
+| Execution Gateway | Same process. `POST /v1/commands` submits governed work (`serviceKey` preferred); `GET /v1/services` lists the catalog; `GET /v1/runs/:id` / `GET /v1/executions/:id` read state; `POST /v1/approvals/:id/decision` resumes gated runs. Creates durable `aion_execution` records. |
+| Grok / workers | Use `GrokRuntimeClient` / `RuntimeClient` in `src/clients` — Runtime clients, not embedded control planes. |
 | Config | env only: `DATABASE_URL` (required), `AION_ENVIRONMENT`, `PORT`, `LOG_LEVEL`, `DATABASE_SSL`, release vars. |
 | Credentials | app role only. Must **never** receive `MIGRATION_DATABASE_URL`. |
 | Migrations | not run by the long-running host; use `node dist/migrate.js` (migration job). |
