@@ -63,7 +63,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE aion_migrator IN SCHEMA public
 -- (The blanket default-privilege revoke above keeps the app role INSERT/SELECT
 --  only by default; per-table UPDATE is re-granted explicitly where mutable
 --  operational state requires it — runs, missions, approvals, actors, outcomes.)
-GRANT UPDATE ON runs, missions, approvals, actors, outcomes, evaluation_results TO aion_app;
+GRANT UPDATE ON runs, missions, approvals, actors, outcomes, evaluation_results, autonomy_grants TO aion_app;
 
 -- ── Never: the app role gets no schema-modification or role privileges ───────
 REVOKE CREATE ON SCHEMA public FROM aion_app;

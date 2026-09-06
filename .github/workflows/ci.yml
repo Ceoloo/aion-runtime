@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   verify:
-    name: typecheck · build · portability · acceptance · mission001-proof · mission002-proof · mission003-proof · mission004-proof · mission005-proof · mission006-proof · mission007-proof · platform-v01-cert
+    name: typecheck · build · portability · acceptance · mission001-proof · mission002-proof · mission003-proof · mission004-proof · mission005-proof · mission006-proof · mission007-proof · mission008-proof · platform-v01-cert
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -122,6 +122,15 @@ jobs:
           GIT_SHA: ${{ github.sha }}
           PORT: '8097'
         run: npm run proof:mission007
+
+      - name: Mission 008 proof matrix (earned autonomy)
+        env:
+          MIGRATION_DATABASE_URL: postgresql://aion_migrator:ci_migrator@localhost:5432/aion_data
+          DATABASE_URL: postgresql://aion_app:ci_app@localhost:5432/aion_data
+          DATABASE_SSL: 'false'
+          GIT_SHA: ${{ github.sha }}
+          PORT: '8098'
+        run: npm run proof:mission008
 
       - name: Platform v0.1 multi-domain certification
         env:
