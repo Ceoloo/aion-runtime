@@ -36,9 +36,14 @@ import {
   createMission,
   createWorkflow,
   isAionError,
+  newCommandId,
+  newCorrelationId,
+  newRequestId,
+  newRunId,
   type AgentActor,
   type CommandInput,
   type RiskLevel,
+  type Run,
 } from '@aion/core';
 import type { ControlPlane } from './control-plane.js';
 import type { Logger } from './logger.js';
@@ -308,7 +313,69 @@ async function submitCommand(
       ...(catalogServiceKey ? { resolvedServiceKey: catalogServiceKey } : {}),
     });
     if (authz.decision === 'DENY') {
-      return jsonError(403, 'authorization_denied', authz.reason);
+      // Persist a denied Execution Object so Mission 005 economics can count
+      // policy denials (fail-closed still returns 403 to the caller).
+      const now = new Date().toISOString();
+      const deniedRun: Run = {
+        runId: newRunId(),
+        requestId:
+          typeof raw.requestId === 'string' && raw.requestId.length > 0
+            ? (raw.requestId as Run['requestId'])
+            : newRequestId(),
+        ...(typeof raw.missionId === 'string'
+          ? { missionId: raw.missionId as Run['missionId'] }
+          : {}),
+        commandId: newCommandId(),
+        actorId: actor.actorId,
+        state: 'denied',
+        ...(typeof raw.riskLevel === 'string'
+          ? { riskLevel: raw.riskLevel as RiskLevel }
+          : catalogRisk
+            ? { riskLevel: catalogRisk }
+            : {}),
+        correlationId: newCorrelationId(),
+        createdAt: now,
+        updatedAt: now,
+      };
+      await cp.dataLayer.runs.save(deniedRun);
+      const deniedExe = createExecutionObject({
+        run: deniedRun,
+        agent,
+        tenantId: agent.tenantId,
+        companyId: agent.companyId,
+        ventureId: agent.ventureId,
+        projectId: agent.projectId,
+        auditTrace: [
+          {
+            at: now,
+            event: 'policy.denied',
+            detail: { reason: authz.reason, decision: 'DENY' },
+          },
+        ],
+        metadata: {
+          denialReason: authz.reason,
+          ...(catalogServiceKey ? { serviceKey: catalogServiceKey } : {}),
+        },
+      });
+      // Force status denied (createExecutionObject maps from run.state already).
+      await cp.dataLayer.executions.save(deniedExe);
+      logger.info('gateway_authorization_denied', {
+        operation: 'POST /v1/commands',
+        run_id: deniedRun.runId,
+        execution_id: deniedExe.executionId,
+        reason: authz.reason,
+      });
+      return {
+        status: 403,
+        body: {
+          status: 'denied',
+          error: 'authorization_denied',
+          message: authz.reason,
+          run: deniedRun,
+          execution: deniedExe,
+          decision: { decision: 'DENY', reason: authz.reason },
+        },
+      };
     }
     // REQUIRE_APPROVAL is still handled by the orchestrator / catalog gate below.
   }

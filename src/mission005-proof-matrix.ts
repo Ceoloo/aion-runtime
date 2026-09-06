@@ -201,16 +201,42 @@ async function passA(
     );
   }
 
-  // 3) Policy denial
-  const denied = (await client.submitCommand({
-    name: 'm005.deny',
-    actor: limited,
-    capability: RESEARCH,
-    missionId,
-    payload: { proof: 'm005', role: 'deny' },
-  })) as CommandResponse;
-  if (denied.status !== 'denied') {
-    fail('A', `expected denied, got ${denied.status}`);
+  // 3) Policy denial — expect HTTP 403 with durable denied execution
+  let deniedExecutionId: string | undefined;
+  try {
+    const denied = (await client.submitCommand({
+      name: 'm005.deny',
+      actor: limited,
+      capability: RESEARCH,
+      missionId,
+      payload: { proof: 'm005', role: 'deny' },
+    })) as CommandResponse;
+    if (denied.status !== 'denied') {
+      fail('A', `expected denied, got ${denied.status}`);
+    }
+    deniedExecutionId = denied.execution?.executionId;
+  } catch (err) {
+    if (!(err instanceof RuntimeApiError) || err.status !== 403) {
+      throw err;
+    }
+    const body = err.body as CommandResponse | undefined;
+    if (body?.status !== 'denied' && body?.execution?.status !== 'denied') {
+      // Still OK if body carries denied execution under error envelope
+      const exe = (body as { execution?: { executionId?: string; status?: string } })
+        ?.execution;
+      if (exe?.status !== 'denied' && !exe?.executionId) {
+        fail(
+          'A',
+          `expected denied execution on 403, got ${JSON.stringify(err.body)}`,
+        );
+      }
+      deniedExecutionId = exe?.executionId;
+    } else {
+      deniedExecutionId = body.execution?.executionId;
+    }
+  }
+  if (!deniedExecutionId) {
+    fail('A', 'policy denial did not persist an execution id');
   }
 
   // 4) Human intervention — gated R2 then approve
