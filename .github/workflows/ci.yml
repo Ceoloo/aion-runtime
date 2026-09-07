@@ -134,7 +134,11 @@ jobs:
 
       - name: Mission 009 proof matrix (GHL client plane A–J)
         env:
-          PORT: "8099"
+          MIGRATION_DATABASE_URL: postgresql://aion_migrator:ci_migrator@localhost:5432/aion_data
+          DATABASE_URL: postgresql://aion_app:ci_app@localhost:5432/aion_data
+          DATABASE_SSL: 'false'
+          GIT_SHA: ${{ github.sha }}
+          PORT: '8099'
         run: npm run proof:mission009
 
       - name: Platform v0.1 multi-domain certification
