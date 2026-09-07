@@ -78,7 +78,7 @@ docker run -d --name "$RT" --network "$NET" \
 
 probe() { docker run --rm --network "$NET" curlimages/curl:8.10.1 -sf --max-time 5 "$@"; }
 
-echo "[boot-check] 4/4 assert boot signals"
+echo "[boot-check] 4/5 assert boot signals"
 ready=""
 for _ in $(seq 1 30); do
   if probe "http://${RT}:8080/health/live" >/dev/null 2>&1; then ready=1; break; fi
@@ -101,4 +101,27 @@ if [ -n "${EXPECTED_SHA}" ]; then
     || fail "GET / git_sha != expected ${EXPECTED_SHA}"
 fi
 
-echo "[boot-check] PASS — ${IMAGE} boots, migrates, and serves /health/ready"
+echo "[boot-check] 5/5 packaging hygiene — no development residue in the image"
+docker run --rm --entrypoint sh "$IMAGE" -c '
+  set -e
+  # No source-control metadata anywhere.
+  test ! -d /app/vendor/aion-core/.git
+  test ! -d /app/vendor/aion-data/.git
+  test ! -d /app/vendor/aion-data/vendor/aion-core/.git
+  [ -z "$(find /app -name .git -print -quit)" ] || { echo "found .git under /app" >&2; exit 1; }
+  # No TypeScript sources left in the vendored packages (dist/** is what runs).
+  test ! -d /app/vendor/aion-core/src
+  test ! -d /app/vendor/aion-data/src
+  # No known dev-only tooling carried by ANY node_modules under /app.
+  hit="$(find /app -type d -path "*/node_modules/*" \( \
+      -name typescript -o -name vitest -o -name @vitest -o -name vite \
+   -o -name eslint -o -name @eslint -o -name @typescript-eslint \
+   -o -name tsx -o -name ts-node -o -name esbuild -o -name @esbuild \
+   -o -name rollup -o -name @rollup -o -name @types -o -name chai \) -print)"
+  if [ -n "$hit" ]; then echo "dev tooling present:" >&2; echo "$hit" >&2; exit 1; fi
+  # aion-data migrations MUST still be present (its package "files" list).
+  find /app/vendor/aion-data/migrations -name "*.sql" | grep -q .
+  echo "  hygiene OK: no .git, no src/, no TypeScript/Vitest/ESLint; migrations present"
+' || fail "development residue found in the final image"
+
+echo "[boot-check] PASS — ${IMAGE} boots, migrates, serves /health/ready, and carries no dev residue"
