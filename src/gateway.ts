@@ -43,6 +43,11 @@
  *   POST /v1/implementations/:caseId/intake — IE-001 complete intake + qualify
  *   POST /v1/implementations/:caseId/blueprint — IE-001 draft/edit blueprint
  *   POST /v1/implementations/:caseId/blueprint/approve — IE-001 approve blueprint
+ *   POST /v1/implementations/:caseId/provisioning/start — IE-002 start provisioning
+ *   POST /v1/implementations/:caseId/provisioning/steps/:key — IE-002 update step
+ *   POST /v1/implementations/:caseId/provisioning/steps/:key/probe — IE-002 readiness probe
+ *   POST /v1/implementations/:caseId/activation/ready — IE-002 mark activation_ready
+ *   POST /v1/implementations/:caseId/activate — IE-002 human activate → active
  */
 import type { IncomingMessage } from 'node:http';
 import {
@@ -74,12 +79,18 @@ import {
   ImplementationCaseId,
   ImplementationIntake,
   ImplementationPackage,
+  ProvisioningStepKey,
+  ProvisioningStepStatus,
   SolutionBlueprint,
+  activateImplementation,
   applyIntake,
   approveBlueprint,
   attachBlueprintDraft,
   createImplementationCase,
   draftBlueprintFromCase,
+  markActivationReady,
+  startProvisioning,
+  updateProvisioningStep,
   isAionError,
   newCommandId,
   newCorrelationId,
@@ -267,6 +278,59 @@ export async function handleGatewayRequest(
     if (method === 'POST' && implIntakeMatch) {
       return await submitImplementationIntake(
         decodeURIComponent(implIntakeMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+      );
+    }
+    const implProvStartMatch =
+      /^\/v1\/implementations\/([^/]+)\/provisioning\/start$/.exec(path);
+    if (method === 'POST' && implProvStartMatch) {
+      return await startImplementationProvisioning(
+        decodeURIComponent(implProvStartMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+      );
+    }
+    const implStepProbeMatch =
+      /^\/v1\/implementations\/([^/]+)\/provisioning\/steps\/([^/]+)\/probe$/.exec(
+        path,
+      );
+    if (method === 'POST' && implStepProbeMatch) {
+      return await probeImplementationProvisioningStep(
+        decodeURIComponent(implStepProbeMatch[1]!),
+        decodeURIComponent(implStepProbeMatch[2]!),
+        await readJsonBody(req),
+        cp,
+        req,
+      );
+    }
+    const implStepMatch =
+      /^\/v1\/implementations\/([^/]+)\/provisioning\/steps\/([^/]+)$/.exec(path);
+    if (method === 'POST' && implStepMatch) {
+      return await updateImplementationProvisioningStep(
+        decodeURIComponent(implStepMatch[1]!),
+        decodeURIComponent(implStepMatch[2]!),
+        await readJsonBody(req),
+        cp,
+        req,
+      );
+    }
+    const implActReadyMatch =
+      /^\/v1\/implementations\/([^/]+)\/activation\/ready$/.exec(path);
+    if (method === 'POST' && implActReadyMatch) {
+      return await markImplementationActivationReady(
+        decodeURIComponent(implActReadyMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+      );
+    }
+    const implActivateMatch = /^\/v1\/implementations\/([^/]+)\/activate$/.exec(path);
+    if (method === 'POST' && implActivateMatch) {
+      return await activateImplementationCase(
+        decodeURIComponent(implActivateMatch[1]!),
         await readJsonBody(req),
         cp,
         req,
@@ -2247,6 +2311,308 @@ async function approveImplementationBlueprint(
       409,
       'illegal_transition',
       err instanceof Error ? err.message : 'blueprint approval rejected',
+    );
+  }
+}
+
+// ── IE-002 Provisioning + Activation Gate ───────────────────────────────────
+
+async function startImplementationProvisioning(
+  caseIdRaw: string,
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to start provisioning (IE-002)',
+    );
+  }
+  const loaded = await loadImplementationForTenant(caseIdRaw, callerTenant, cp);
+  if ('status' in loaded) return loaded;
+  const raw =
+    body && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const startedBy =
+    typeof raw.startedBy === 'string' && raw.startedBy.trim()
+      ? raw.startedBy
+      : loaded.caseRecord.ownerId;
+  try {
+    const updated = startProvisioning(loaded.caseRecord, startedBy);
+    await cp.dataLayer.implementationCases.save(updated);
+    return { status: 200, body: { case: updated } };
+  } catch (err) {
+    return jsonError(
+      409,
+      'illegal_transition',
+      err instanceof Error ? err.message : 'start provisioning rejected',
+    );
+  }
+}
+
+async function updateImplementationProvisioningStep(
+  caseIdRaw: string,
+  stepKeyRaw: string,
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to update provisioning steps (IE-002)',
+    );
+  }
+  const loaded = await loadImplementationForTenant(caseIdRaw, callerTenant, cp);
+  if ('status' in loaded) return loaded;
+  const keyParsed = ProvisioningStepKey.safeParse(stepKeyRaw);
+  if (!keyParsed.success) {
+    return jsonError(400, 'invalid_step', `unknown provisioning step ${stepKeyRaw}`);
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'step body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  const statusParsed = ProvisioningStepStatus.safeParse(raw.status);
+  if (!statusParsed.success) {
+    return jsonError(400, 'invalid_status', 'status must be a ProvisioningStepStatus');
+  }
+  try {
+    const updated = updateProvisioningStep(loaded.caseRecord, {
+      key: keyParsed.data,
+      status: statusParsed.data,
+      ...(typeof raw.evidence === 'string' ? { evidence: raw.evidence } : {}),
+      ...(typeof raw.completedBy === 'string'
+        ? { completedBy: raw.completedBy }
+        : {}),
+      ...(typeof raw.blockReason === 'string'
+        ? { blockReason: raw.blockReason }
+        : {}),
+    });
+    await cp.dataLayer.implementationCases.save(updated);
+    return { status: 200, body: { case: updated } };
+  } catch (err) {
+    return jsonError(
+      409,
+      'illegal_transition',
+      err instanceof Error ? err.message : 'step update rejected',
+    );
+  }
+}
+
+/**
+ * Config-presence / evidence probes for P0 gates (GHL + model).
+ * Does not auto-provision. When probe ok + confirm, marks step verified.
+ */
+function probeGhlReadiness(raw: Record<string, unknown>): {
+  ok: boolean;
+  evidence: string;
+  missing: string[];
+} {
+  const apiKey =
+    process.env.AION_GHL_API_KEY ||
+    process.env.GHL_API_KEY ||
+    (typeof raw.apiKeyPresent === 'boolean' && raw.apiKeyPresent ? 'provided' : '');
+  const locationId =
+    (typeof raw.locationId === 'string' && raw.locationId.trim()) ||
+    process.env.AION_GHL_LOCATION_ID ||
+    process.env.GHL_LOCATION_ID ||
+    '';
+  const missing: string[] = [];
+  if (!apiKey) missing.push('ghl_api_key');
+  if (!locationId) missing.push('ghl_location_id');
+  const ok = missing.length === 0;
+  return {
+    ok,
+    missing,
+    evidence: ok
+      ? `GHL readiness probe ok — locationId=${locationId} (api key present; live CRM call not performed)`
+      : `GHL readiness probe failed — missing ${missing.join(', ')}`,
+  };
+}
+
+function probeModelReadiness(raw: Record<string, unknown>): {
+  ok: boolean;
+  evidence: string;
+  missing: string[];
+} {
+  const provider =
+    (typeof raw.provider === 'string' && raw.provider.trim()) ||
+    process.env.AION_MODEL_PROVIDER ||
+    '';
+  const hasKey = Boolean(
+    process.env.OPENAI_API_KEY ||
+      process.env.ANTHROPIC_API_KEY ||
+      process.env.AION_MODEL_API_KEY ||
+      (typeof raw.apiKeyPresent === 'boolean' && raw.apiKeyPresent),
+  );
+  const missing: string[] = [];
+  if (!provider && !hasKey) missing.push('model_provider_or_api_key');
+  else if (!hasKey && provider) {
+    // Provider named but no key in env — still allow explicit apiKeyPresent.
+    if (!(typeof raw.apiKeyPresent === 'boolean' && raw.apiKeyPresent)) {
+      missing.push('model_api_key');
+    }
+  }
+  const ok = missing.length === 0;
+  const resolvedProvider = provider || (hasKey ? 'env-configured' : 'none');
+  return {
+    ok,
+    missing,
+    evidence: ok
+      ? `Model readiness probe ok — provider=${resolvedProvider} (capability call not performed)`
+      : `Model readiness probe failed — missing ${missing.join(', ')}`,
+  };
+}
+
+async function probeImplementationProvisioningStep(
+  caseIdRaw: string,
+  stepKeyRaw: string,
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required for provisioning probes (IE-002)',
+    );
+  }
+  const loaded = await loadImplementationForTenant(caseIdRaw, callerTenant, cp);
+  if ('status' in loaded) return loaded;
+  if (stepKeyRaw !== 'ghl_connection' && stepKeyRaw !== 'model_access') {
+    return jsonError(
+      400,
+      'probe_unsupported',
+      'only ghl_connection and model_access support probes in IE-002',
+    );
+  }
+  const raw =
+    body && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const probe =
+    stepKeyRaw === 'ghl_connection' ? probeGhlReadiness(raw) : probeModelReadiness(raw);
+  const completedBy =
+    typeof raw.completedBy === 'string' && raw.completedBy.trim()
+      ? raw.completedBy
+      : loaded.caseRecord.ownerId;
+  const confirm = raw.confirm === true;
+
+  if (!confirm) {
+    return {
+      status: 200,
+      body: {
+        probe: { step: stepKeyRaw, ...probe },
+        case: loaded.caseRecord,
+        hint: 'Re-POST with confirm:true to record verified/blocked from probe result',
+      },
+    };
+  }
+
+  try {
+    let working = loaded.caseRecord;
+    if (working.deliveryStatus === 'blueprint_approved') {
+      working = startProvisioning(working, completedBy);
+    }
+    const updated = updateProvisioningStep(working, {
+      key: stepKeyRaw as 'ghl_connection' | 'model_access',
+      status: probe.ok ? 'verified' : 'blocked',
+      evidence: probe.evidence,
+      completedBy,
+      ...(probe.ok ? {} : { blockReason: probe.evidence }),
+    });
+    await cp.dataLayer.implementationCases.save(updated);
+    return {
+      status: 200,
+      body: { probe: { step: stepKeyRaw, ...probe }, case: updated },
+    };
+  } catch (err) {
+    return jsonError(
+      409,
+      'illegal_transition',
+      err instanceof Error ? err.message : 'probe apply rejected',
+    );
+  }
+}
+
+async function markImplementationActivationReady(
+  caseIdRaw: string,
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to mark activation ready (IE-002)',
+    );
+  }
+  const loaded = await loadImplementationForTenant(caseIdRaw, callerTenant, cp);
+  if ('status' in loaded) return loaded;
+  const raw =
+    body && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const markedBy =
+    typeof raw.markedBy === 'string' && raw.markedBy.trim()
+      ? raw.markedBy
+      : loaded.caseRecord.ownerId;
+  try {
+    const updated = markActivationReady(loaded.caseRecord, markedBy);
+    await cp.dataLayer.implementationCases.save(updated);
+    return { status: 200, body: { case: updated } };
+  } catch (err) {
+    return jsonError(
+      409,
+      'illegal_transition',
+      err instanceof Error ? err.message : 'activation ready rejected',
+    );
+  }
+}
+
+async function activateImplementationCase(
+  caseIdRaw: string,
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to activate implementations (IE-002)',
+    );
+  }
+  const loaded = await loadImplementationForTenant(caseIdRaw, callerTenant, cp);
+  if ('status' in loaded) return loaded;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'activate body must include approvedBy');
+  }
+  const raw = body as Record<string, unknown>;
+  if (typeof raw.approvedBy !== 'string' || !raw.approvedBy.trim()) {
+    return jsonError(400, 'approved_by_required', 'activate requires approvedBy (human gate)');
+  }
+  try {
+    const updated = activateImplementation(loaded.caseRecord, raw.approvedBy.trim());
+    await cp.dataLayer.implementationCases.save(updated);
+    return { status: 200, body: { case: updated } };
+  } catch (err) {
+    return jsonError(
+      409,
+      'illegal_transition',
+      err instanceof Error ? err.message : 'activation rejected',
     );
   }
 }
