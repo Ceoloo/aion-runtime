@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 const CORE_REPO = process.env.AION_CORE_REPO ?? 'https://github.com/Ceoloo/aion-core';
 const DATA_REPO = process.env.AION_DATA_REPO ?? 'https://github.com/Ceoloo/aion-data';
 // aion-core tip after Mission 008 branch (AutonomyGrant). Re-pin after core lands.
-const CORE_REF = process.env.AION_CORE_REF ?? '77ad55420dfcd93819b17054c1a915f0f147aafd';
+const CORE_REF = process.env.AION_CORE_REF ?? '42647717d9d38fd50eacb347987b70a96e6293d2';
 // aion-data tip after Mission 008 branch (autonomy_grants). Re-pin after data lands.
 const DATA_REF = process.env.AION_DATA_REF ?? 'b6f9e3fb65223e7108f11729754fd0db75dfe0aa';
 
