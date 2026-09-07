@@ -9,10 +9,12 @@
  * Execution Gateway — reconciled INTO this same Runtime process (not a second
  * gateway service). See src/gateway.ts and Notion Progress Assessment Sep 2026.
  *   POST /v1/commands
+ *   POST /v1/missions/run
  *   GET  /v1/runs/:runId
  *   POST /v1/approvals/:approvalId/decision
  *   GET  /v1/executions/:executionId
  *   GET  /v1/executions/by-run/:runId
+ *   GET  /v1/executions/by-root/:rootExecutionId
  */
 import http from 'node:http';
 import type { ControlPlane } from './control-plane.js';

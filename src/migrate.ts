@@ -70,6 +70,13 @@ async function main(): Promise<void> {
       inserted: seed2.inserted,
       total: seed2.total,
     });
+
+    log('info', 'seeding_mission_009_catalog');
+    const seed9 = await dl.services.seedMission009();
+    log('info', 'mission_009_catalog_ready', {
+      inserted: seed9.inserted,
+      total: seed9.total,
+    });
   } catch (err) {
     // A failed migration must STOP the pipeline (§63) — never continue.
     log('error', 'migration_failed', { error: err instanceof Error ? err.message : 'unknown' });
