@@ -30,6 +30,11 @@
  *   GET  /v1/scorecards                   — Mission 007 performance scorecards
  *   GET  /v1/routing/recommend            — Mission 007 recommendation-only route
  *   POST /v1/routing/override             — Mission 007 manual override (inspect/recommend)
+ *   POST /v1/autonomy/evaluate            — Mission 008 dry-run eligible level
+ *   POST /v1/autonomy/promote             — Mission 008 create/activate grant
+ *   POST /v1/autonomy/demote              — Mission 008 revoke / lower grant
+ *   GET  /v1/autonomy/grants              — Mission 008 list grants
+ *   GET  /v1/autonomy/grants/:grantId     — Mission 008 fetch grant
  */
 import type { IncomingMessage } from 'node:http';
 import {
@@ -51,6 +56,12 @@ import {
   createExecutionObject,
   createMission,
   createWorkflow,
+  createAutonomyGrant,
+  computeEligibleAutonomyLevel,
+  demoteAutonomyLevel,
+  buildAutonomyEvidence,
+  AutonomyGrant,
+  AutonomyGrantId,
   isAionError,
   newCommandId,
   newCorrelationId,
@@ -58,6 +69,7 @@ import {
   newRunId,
   recommendRoute,
   type AgentActor,
+  type AutonomyEnvironment,
   type CommandInput,
   type RiskLevel,
   type Run,
@@ -175,6 +187,27 @@ export async function handleGatewayRequest(
 
     if (method === 'POST' && path === '/v1/routing/override') {
       return await setRoutingOverride(await readJsonBody(req), cp, req);
+    }
+
+    if (method === 'POST' && path === '/v1/autonomy/evaluate') {
+      return await evaluateAutonomyEligibility(await readJsonBody(req), cp, req);
+    }
+    if (method === 'POST' && path === '/v1/autonomy/promote') {
+      return await promoteAutonomy(await readJsonBody(req), cp, req);
+    }
+    if (method === 'POST' && path === '/v1/autonomy/demote') {
+      return await demoteAutonomy(await readJsonBody(req), cp, req);
+    }
+    if (method === 'GET' && path === '/v1/autonomy/grants') {
+      return await listAutonomyGrants(url, cp, req);
+    }
+    const autonomyGrantMatch = /^\/v1\/autonomy\/grants\/([^/]+)$/.exec(path);
+    if (method === 'GET' && autonomyGrantMatch) {
+      return await getAutonomyGrant(
+        decodeURIComponent(autonomyGrantMatch[1]!),
+        cp,
+        req,
+      );
     }
 
     const evaluationMatch = /^\/v1\/evaluations\/([^/]+)$/.exec(path);
@@ -337,6 +370,7 @@ async function submitCommand(
 
   // Mission 003: Runtime decides ALLOW / DENY / REQUIRE_APPROVAL. Never trusts
   // agent self-claims for tenant, identity, or serviceKey authority.
+  let autonomyGrant: AutonomyGrant | undefined;
   if (actor.actorType === 'agent') {
     const agent = actor as AgentActor;
     if (!agent.tenantId) {
@@ -371,10 +405,31 @@ async function submitCommand(
     if (typeof raw.approvalId === 'string') {
       approval = await cp.dataLayer.approvals.get(raw.approvalId as never);
     }
+    const environment: AutonomyEnvironment =
+      raw.environment === 'production' ? 'production' : 'staging';
+    autonomyGrant =
+      catalogServiceKey
+        ? await cp.dataLayer.autonomyGrants.getActive({
+            tenantId: agent.tenantId,
+            agentId: agent.agentId,
+            environment,
+            serviceKey: catalogServiceKey,
+          })
+        : undefined;
+    if (!autonomyGrant) {
+      autonomyGrant = await cp.dataLayer.autonomyGrants.getActive({
+        tenantId: agent.tenantId,
+        agentId: agent.agentId,
+        environment,
+        capability: String(cap),
+      });
+    }
     const authz = cp.policyEngine.authorize(authReq, {
       actor,
       ...(approval ? { approval } : {}),
       ...(catalogServiceKey ? { resolvedServiceKey: catalogServiceKey } : {}),
+      ...(autonomyGrant ? { autonomyGrant } : {}),
+      ...(raw.manualAutonomyDemote === true ? { manualAutonomyDemote: true } : {}),
     });
     if (authz.decision === 'DENY') {
       // Persist a denied Execution Object so Mission 005 economics can count
@@ -506,6 +561,8 @@ async function submitCommand(
           serviceOwner: catalogService.owner,
         }
       : {}),
+    ...(autonomyGrant ? { autonomyGrant } : {}),
+    ...(raw.manualAutonomyDemote === true ? { manualAutonomyDemote: true } : {}),
   };
 
   const input: CommandInput = {
@@ -1240,6 +1297,305 @@ async function setRoutingOverride(
       note: 'Recommendation-only — ExecutionRegistry deterministic route remains fallback',
     },
   };
+}
+
+function parseEnvironment(raw: unknown): AutonomyEnvironment {
+  return raw === 'production' ? 'production' : 'staging';
+}
+
+/** Mission 008 — dry-run eligible autonomy level from evidence. */
+async function evaluateAutonomyEligibility(
+  body: unknown,
+  _cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required for autonomy evaluate (Mission 008)',
+    );
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'evaluate body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  if (raw.tenantId && raw.tenantId !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot evaluate autonomy for ${String(raw.tenantId)}`,
+    );
+  }
+  let evidence;
+  try {
+    evidence = buildAutonomyEvidence(
+      (raw.evidence ?? {
+        sampleCount: raw.sampleCount,
+        successCount: raw.successCount,
+        policyViolationCount: raw.policyViolationCount ?? 0,
+        humanInterventionCount: raw.humanInterventionCount ?? 0,
+        sumEvalScore: raw.sumEvalScore,
+        costs: raw.costs,
+        rollbackCount: raw.rollbackCount,
+      }) as Parameters<typeof buildAutonomyEvidence>[0],
+    );
+  } catch (err) {
+    return jsonError(
+      400,
+      'invalid_evidence',
+      err instanceof Error ? err.message : 'invalid evidence',
+    );
+  }
+  const serviceRisk = (typeof raw.serviceRisk === 'string'
+    ? raw.serviceRisk
+    : 'R1') as RiskLevel;
+  const environment = parseEnvironment(raw.environment);
+  const l4Allowed = raw.l4Allowed === true;
+  const eligibleLevel = computeEligibleAutonomyLevel({
+    evidence,
+    serviceRisk,
+    environment,
+    l4Allowed,
+  });
+  return {
+    status: 200,
+    body: { eligibleLevel, evidence, serviceRisk, environment, l4Allowed },
+  };
+}
+
+async function promoteAutonomy(
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required for autonomy promote (Mission 008)',
+    );
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'promote body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  if (raw.tenantId && raw.tenantId !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot promote autonomy for ${String(raw.tenantId)}`,
+    );
+  }
+  if (typeof raw.agentId !== 'string') {
+    return jsonError(400, 'invalid_agent_id', 'agentId is required');
+  }
+  let evidence;
+  try {
+    evidence = buildAutonomyEvidence(
+      (raw.evidence ?? raw) as Parameters<typeof buildAutonomyEvidence>[0],
+    );
+  } catch (err) {
+    return jsonError(
+      400,
+      'invalid_evidence',
+      err instanceof Error ? err.message : 'invalid evidence',
+    );
+  }
+  const serviceRisk = (typeof raw.serviceRisk === 'string'
+    ? raw.serviceRisk
+    : 'R1') as RiskLevel;
+  const environment = parseEnvironment(raw.environment);
+  const l4Allowed = raw.l4Allowed === true;
+  const eligibleLevel = computeEligibleAutonomyLevel({
+    evidence,
+    serviceRisk,
+    environment,
+    l4Allowed,
+  });
+  const levelOrder = ['L0', 'L1', 'L2', 'L3', 'L4'] as const;
+  const requested =
+    typeof raw.currentLevel === 'string' ? raw.currentLevel : eligibleLevel;
+  const reqIdx = levelOrder.indexOf(requested as (typeof levelOrder)[number]);
+  const eligIdx = levelOrder.indexOf(eligibleLevel);
+  const currentLevel =
+    reqIdx >= 0 && reqIdx <= eligIdx
+      ? (requested as (typeof levelOrder)[number])
+      : eligibleLevel;
+
+  if (eligibleLevel === 'L1' && raw.force !== true) {
+    return jsonError(
+      409,
+      'insufficient_evidence',
+      'evidence does not qualify for promotion above L1',
+    );
+  }
+
+  try {
+    const grant = createAutonomyGrant({
+      agentId: raw.agentId as never,
+      tenantId: callerTenant,
+      environment,
+      currentLevel,
+      eligibleLevel,
+      evidence,
+      grantReason:
+        typeof raw.grantReason === 'string'
+          ? raw.grantReason
+          : `promoted to ${currentLevel} by evidence`,
+      ...(typeof raw.serviceKey === 'string'
+        ? { serviceKey: raw.serviceKey as never }
+        : {}),
+      ...(typeof raw.capability === 'string'
+        ? { capability: raw.capability as never }
+        : {}),
+      grantedBy: raw.grantedBy === 'human' ? 'human' : 'policy',
+      l4Allowed,
+      maxWaiveRisk: serviceRisk === 'R3' ? 'R2' : (serviceRisk as never),
+    });
+    const safeGrant = AutonomyGrant.parse({
+      ...grant,
+      maxWaiveRisk: grant.maxWaiveRisk === 'R3' ? 'R2' : grant.maxWaiveRisk,
+    });
+    await cp.dataLayer.autonomyGrants.save(safeGrant);
+    return { status: 201, body: { grant: safeGrant } };
+  } catch (err) {
+    return jsonError(
+      400,
+      'invalid_grant',
+      err instanceof Error ? err.message : 'grant failed',
+    );
+  }
+}
+
+async function demoteAutonomy(
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required for autonomy demote (Mission 008)',
+    );
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'demote body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  if (raw.tenantId && raw.tenantId !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot demote autonomy for ${String(raw.tenantId)}`,
+    );
+  }
+  const environment = parseEnvironment(raw.environment);
+  let grant =
+    typeof raw.grantId === 'string'
+      ? await cp.dataLayer.autonomyGrants.get(raw.grantId)
+      : undefined;
+  if (!grant && typeof raw.agentId === 'string') {
+    grant = await cp.dataLayer.autonomyGrants.getActive({
+      tenantId: callerTenant,
+      agentId: raw.agentId,
+      environment,
+      ...(typeof raw.serviceKey === 'string'
+        ? { serviceKey: raw.serviceKey }
+        : {}),
+      ...(typeof raw.capability === 'string'
+        ? { capability: raw.capability }
+        : {}),
+    });
+  }
+  if (!grant || grant.tenantId !== callerTenant) {
+    return jsonError(404, 'grant_not_found', 'active autonomy grant not found');
+  }
+  const reason =
+    raw.reason === 'policy_violation' ||
+    raw.reason === 'evidence_degraded' ||
+    raw.reason === 'high_risk'
+      ? raw.reason
+      : 'manual';
+  const nextLevel = demoteAutonomyLevel(grant.currentLevel, reason);
+  const demoted = AutonomyGrant.parse({
+    ...grant,
+    currentLevel: nextLevel,
+    eligibleLevel: nextLevel,
+    status: 'revoked',
+    lastReviewedAt: new Date().toISOString(),
+    revokedAt: new Date().toISOString(),
+    revokeReason:
+      typeof raw.revokeReason === 'string'
+        ? raw.revokeReason
+        : `demoted to ${nextLevel} (${reason})`,
+  });
+  await cp.dataLayer.autonomyGrants.save(demoted);
+  return { status: 200, body: { grant: demoted } };
+}
+
+async function listAutonomyGrants(
+  url: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to list autonomy grants (Mission 008)',
+    );
+  }
+  const params = new URL(url, 'http://localhost').searchParams;
+  const queryTenant = params.get('tenantId');
+  if (queryTenant && queryTenant !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot list grants for ${queryTenant}`,
+    );
+  }
+  const grants = await cp.dataLayer.autonomyGrants.listForTenant(callerTenant, {
+    ...(params.get('agentId') ? { agentId: params.get('agentId')! } : {}),
+    ...(params.get('status') ? { status: params.get('status')! } : {}),
+  });
+  return { status: 200, body: { grants, count: grants.length } };
+}
+
+async function getAutonomyGrant(
+  grantIdRaw: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to read autonomy grants (Mission 008)',
+    );
+  }
+  const parsed = AutonomyGrantId.safeParse(grantIdRaw);
+  if (!parsed.success) {
+    return jsonError(400, 'invalid_grant_id', 'grantId must be an AutonomyGrantId');
+  }
+  const grant = await cp.dataLayer.autonomyGrants.get(parsed.data);
+  if (!grant) {
+    return jsonError(404, 'grant_not_found', `grant ${grantIdRaw} not found`);
+  }
+  if (grant.tenantId !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot read grant owned by ${grant.tenantId}`,
+    );
+  }
+  return { status: 200, body: { grant } };
 }
 
 /**

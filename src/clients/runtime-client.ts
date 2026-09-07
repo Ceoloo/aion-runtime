@@ -43,6 +43,8 @@ export interface SubmitCommandRequest {
   revenueAttributed?: number;
   /** Optional human-readable outcome summary on the Execution Object. */
   outcomeSummary?: string;
+  /** Mission 008 — environment scope for AutonomyGrant lookup. */
+  environment?: 'staging' | 'production';
   /** Mission 004 lineage — optional on single-command submit. */
   executionId?: string;
   parentExecutionId?: string;
@@ -290,6 +292,62 @@ export class RuntimeClient {
   ): Promise<unknown> {
     return this.request('POST', '/v1/routing/override', {
       body,
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 008 — dry-run eligible autonomy level. */
+  async evaluateAutonomy(
+    body: Record<string, unknown>,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('POST', '/v1/autonomy/evaluate', {
+      body,
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 008 — promote / create AutonomyGrant. */
+  async promoteAutonomy(
+    body: Record<string, unknown>,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('POST', '/v1/autonomy/promote', {
+      body,
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 008 — demote / revoke AutonomyGrant. */
+  async demoteAutonomy(
+    body: Record<string, unknown>,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('POST', '/v1/autonomy/demote', {
+      body,
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 008 — list autonomy grants. */
+  async listAutonomyGrants(
+    opts?: TenantScopedRequest & { agentId?: string; status?: string },
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.agentId) params.set('agentId', opts.agentId);
+    if (opts?.status) params.set('status', opts.status);
+    const qs = params.toString();
+    return this.request('GET', `/v1/autonomy/grants${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 008 — fetch one grant. */
+  async getAutonomyGrant(
+    grantId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('GET', `/v1/autonomy/grants/${encodeURIComponent(grantId)}`, {
       tenantId: opts?.tenantId,
     });
   }
