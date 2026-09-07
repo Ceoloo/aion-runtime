@@ -2432,7 +2432,7 @@ function probeGhlReadiness(raw: Record<string, unknown>): {
     ok,
     missing,
     evidence: ok
-      ? `GHL readiness probe ok — locationId=${locationId} (api key present; live CRM call not performed)`
+      ? `GHL readiness probe ok — locationId=${locationId} (api key present; Phase A live backend selectable; live CRM call not performed in probe)`
       : `GHL readiness probe failed — missing ${missing.join(', ')}`,
   };
 }
