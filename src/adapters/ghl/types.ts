@@ -7,11 +7,16 @@
 
 export type GhlMutationKind =
   | 'contact.read'
+  | 'contact.search'
   | 'contact.enrich'
   | 'contact.update'
   | 'opportunity.read'
+  | 'opportunity.search'
   | 'opportunity.create'
   | 'opportunity.update'
+  | 'pipeline.read'
+  | 'conversation.read'
+  | 'appointment.read'
   | 'note.create'
   | 'task.create'
   | 'message.draft'
@@ -21,6 +26,8 @@ export interface GhlBackendRequest {
   tenantId: string;
   /** CRM workspace id within the tenant (defaults to tenantId). */
   workspaceId?: string;
+  /** Provider location id when known (live GHL). */
+  locationId?: string;
   action: GhlMutationKind;
   payload: Record<string, unknown>;
   idempotencyKey: string;
@@ -49,4 +56,12 @@ export interface GhlBackend {
   mutationCount?(tenantId: string): number;
   /** Test / proof helper — inject next failure (rate limit, timeout, …). */
   injectFailure?(failure: GhlBackendFailure): void;
+}
+
+export function isGhlReadAction(action: GhlMutationKind): boolean {
+  return (
+    action.endsWith('.read') ||
+    action === 'contact.search' ||
+    action === 'opportunity.search'
+  );
 }

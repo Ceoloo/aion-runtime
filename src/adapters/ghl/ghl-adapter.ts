@@ -2,6 +2,7 @@ import {
   buildExternalIdempotencyKey,
   capability,
   createExternalSideEffect,
+  CRM_CONTACT_UPSERT_MIN_CONFIDENCE,
   formatServiceKey,
   hashExternalResult,
   type Capability,
@@ -12,15 +13,21 @@ import {
 } from '@aion/core';
 import type { PostgresExternalSideEffectRepository } from '@aion/data';
 import type { GhlBackend, GhlMutationKind } from './types.js';
+import { isGhlReadAction } from './types.js';
 import { sharedFakeGhlBackend } from './fake-ghl-backend.js';
 
 const CRM_ACTIONS: Record<string, GhlMutationKind> = {
   'crm.contact.read': 'contact.read',
+  'crm.contact.search': 'contact.search',
   'crm.contact.enrich': 'contact.enrich',
   'crm.contact.update': 'contact.update',
   'crm.opportunity.read': 'opportunity.read',
+  'crm.opportunity.search': 'opportunity.search',
   'crm.opportunity.create': 'opportunity.create',
   'crm.opportunity.update': 'opportunity.update',
+  'crm.pipeline.read': 'pipeline.read',
+  'crm.conversation.read': 'conversation.read',
+  'crm.appointment.read': 'appointment.read',
   'crm.note.create': 'note.create',
   'crm.task.create': 'task.create',
   'crm.message.draft': 'message.draft',
@@ -31,11 +38,16 @@ const CRM_ACTIONS: Record<string, GhlMutationKind> = {
 
 export const MISSION_009_CAPABILITIES: Capability[] = [
   capability('crm.contact.read'),
+  capability('crm.contact.search'),
   capability('crm.contact.enrich'),
   capability('crm.contact.update'),
   capability('crm.opportunity.read'),
+  capability('crm.opportunity.search'),
   capability('crm.opportunity.create'),
   capability('crm.opportunity.update'),
+  capability('crm.pipeline.read'),
+  capability('crm.conversation.read'),
+  capability('crm.appointment.read'),
   capability('crm.note.create'),
   capability('crm.task.create'),
   capability('crm.message.draft'),
@@ -128,7 +140,20 @@ export class GhlAdapter implements ExecutionAdapter {
       if (!payload['fields']) {
         payload['fields'] = contact;
       }
+      // Legacy upsert path treats known email mapping as high-confidence.
+      if (payload['matchConfidence'] === undefined) {
+        payload['matchConfidence'] = 1;
+      }
     }
+
+    // High-confidence gate for contact create / upsert via update.
+    if (action === 'contact.update') {
+      const confidenceGate = assertContactUpsertConfidence(payload);
+      if (confidenceGate) {
+        return fail(this.name, startedAt, confidenceGate.code, confidenceGate.message);
+      }
+    }
+
     // Never trust caller-supplied cross-tenant workspace override without match.
     const workspaceId =
       typeof payload['workspaceId'] === 'string' ? payload['workspaceId'] : tenantId;
@@ -194,7 +219,6 @@ export class GhlAdapter implements ExecutionAdapter {
     const completedAt = new Date().toISOString();
 
     if (!backendResult.ok) {
-      // Do not ledger-block retries on transient/external failures.
       return {
         status: 'failed',
         output: {
@@ -264,14 +288,14 @@ export class GhlAdapter implements ExecutionAdapter {
 
     const costUnits =
       request.capability === 'client.ghl.contact.upsert'
-        ? 3 // preserve M004/M005 economics expectations for legacy upsert
-        : isRead(action)
+        ? 3
+        : isGhlReadAction(action)
           ? 1
           : 4;
     const costTokens =
       request.capability === 'client.ghl.contact.upsert'
         ? 40
-        : isRead(action)
+        : isGhlReadAction(action)
           ? 20
           : 60;
 
@@ -304,6 +328,33 @@ export class GhlAdapter implements ExecutionAdapter {
   }
 }
 
+function assertContactUpsertConfidence(
+  payload: Record<string, unknown>,
+): { code: string; message: string } | null {
+  const hasContactId =
+    typeof payload['contactId'] === 'string' && payload['contactId'].length > 0;
+  const upsertIntent =
+    payload['upsert'] === true ||
+    payload['createIfMissing'] === true ||
+    !hasContactId;
+  if (!upsertIntent && hasContactId) {
+    return null;
+  }
+  const confidence =
+    typeof payload['matchConfidence'] === 'number'
+      ? payload['matchConfidence']
+      : typeof payload['confidence'] === 'number'
+        ? payload['confidence']
+        : undefined;
+  if (confidence === undefined || confidence < CRM_CONTACT_UPSERT_MIN_CONFIDENCE) {
+    return {
+      code: 'CONTACT_UPSERT_CONFIDENCE_TOO_LOW',
+      message: `contact upsert requires matchConfidence ≥ ${CRM_CONTACT_UPSERT_MIN_CONFIDENCE}`,
+    };
+  }
+  return null;
+}
+
 function resolveTenantId(request: ExecutionRequest): string | undefined {
   const meta = request.command.metadata ?? {};
   if (typeof meta['tenantId'] === 'string' && meta['tenantId'].length > 0) {
@@ -331,19 +382,20 @@ function targetFingerprint(
   const keys = [
     'contactId',
     'opportunityId',
+    'pipelineId',
+    'conversationId',
+    'appointmentId',
     'email',
     'name',
     'body',
     'title',
+    'stage',
+    'query',
   ];
   const parts = keys
     .map((k) => (typeof payload[k] === 'string' ? `${k}=${payload[k]}` : ''))
     .filter(Boolean);
   return `${action}|${parts.join('|')}`;
-}
-
-function isRead(action: GhlMutationKind): boolean {
-  return action.endsWith('.read');
 }
 
 function fail(

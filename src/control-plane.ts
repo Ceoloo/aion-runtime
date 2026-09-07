@@ -27,7 +27,7 @@ import type {
 } from '@aion/core';
 import { createDataLayer, type DataLayer } from '@aion/data';
 import type { RuntimeConfig } from './config.js';
-import { GhlAdapter, MISSION_009_CAPABILITIES } from './adapters/ghl/index.js';
+import { GhlAdapter, MISSION_009_CAPABILITIES, createGhlBackendFromEnv } from './adapters/ghl/index.js';
 
 /** The low-risk capability used by the boot self-check (aion-infra §45). */
 export const SMOKE_CAPABILITY: Capability = capability('infra.smoke');
@@ -87,11 +87,16 @@ const DEFAULT_CAPABILITY_RISK: Record<string, RiskLevel> = {
   'client.ghl.contact.upsert': 'R1',
   // Mission 009 CRM / GHL
   'crm.contact.read': 'R1',
+  'crm.contact.search': 'R1',
   'crm.contact.enrich': 'R1',
   'crm.contact.update': 'R2',
   'crm.opportunity.read': 'R1',
+  'crm.opportunity.search': 'R1',
   'crm.opportunity.create': 'R2',
   'crm.opportunity.update': 'R2',
+  'crm.pipeline.read': 'R1',
+  'crm.conversation.read': 'R1',
+  'crm.appointment.read': 'R1',
   'crm.note.create': 'R1',
   'crm.task.create': 'R1',
   'crm.message.draft': 'R2',
@@ -177,7 +182,10 @@ export function buildControlPlane(
     [
       ...baseMockAdapters(),
       // GHL adapter first among CRM handlers — governed external plane (M009).
-      new GhlAdapter({ sideEffects: dataLayer.externalSideEffects }),
+      new GhlAdapter({
+        sideEffects: dataLayer.externalSideEffects,
+        backend: createGhlBackendFromEnv(),
+      }),
     ];
 
   const clock = systemClock;
