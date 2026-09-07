@@ -262,6 +262,19 @@ export class GhlAdapter implements ExecutionAdapter {
         ? (request.command.payload['contact'] as Record<string, unknown>)
         : undefined;
 
+    const costUnits =
+      request.capability === 'client.ghl.contact.upsert'
+        ? 3 // preserve M004/M005 economics expectations for legacy upsert
+        : isRead(action)
+          ? 1
+          : 4;
+    const costTokens =
+      request.capability === 'client.ghl.contact.upsert'
+        ? 40
+        : isRead(action)
+          ? 20
+          : 60;
+
     return {
       status: 'succeeded',
       output: {
@@ -280,7 +293,7 @@ export class GhlAdapter implements ExecutionAdapter {
       startedAt,
       completedAt,
       durationMs: Math.max(1, Date.parse(completedAt) - Date.parse(startedAt) || 1),
-      cost: { units: isRead(action) ? 1 : 4, tokens: isRead(action) ? 20 : 60 },
+      cost: { units: costUnits, tokens: costTokens },
       metadata: {
         adapter: this.name,
         provider: 'ghl',
