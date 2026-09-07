@@ -5,6 +5,11 @@ name: CI
 on:
   push:
     branches: [main]
+    # Release tags build an IMMUTABLE, boot-certified image. A tag push is the
+    # only way to produce a `ghcr.io/…/aion-runtime:execution-platform-vX.Y.Z`
+    # artifact — merging to main was never enough (v0.2.0 was tagged but never
+    # built, so aion-infra had no image to deploy).
+    tags: ['execution-platform-v*']
   pull_request:
 
 permissions:
@@ -151,23 +156,68 @@ jobs:
         run: npm run certify:platform-v01
 
   image:
-    name: build + publish image
+    name: build · boot-certify · publish image
     needs: verify
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Publish on a push to main OR a release-tag push. Never on PRs.
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/tags/execution-platform-v'))
     steps:
       - uses: actions/checkout@v4
-      - name: Lowercase owner (GHCR requires lowercase repository names)
-        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
+      - name: Resolve image references
+        id: refs
+        run: |
+          set -eu
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/aion-runtime"
+          {
+            echo "tags<<EOF"
+            # The commit-SHA tag is ALWAYS published — the immutable ref
+            # aion-infra pins for deploys.
+            echo "${repo}:${GITHUB_SHA}"
+            if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+              # `:latest` is convenience metadata only, never a deploy truth
+              # (aion-infra §21–22) — it tracks main, not releases.
+              echo "${repo}:latest"
+            else
+              # Release-tag push: also publish the human-readable immutable tag,
+              # e.g. …:execution-platform-v0.2.1
+              echo "${repo}:${GITHUB_REF_NAME}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build ONCE, load into the local daemon, and prove it boots before a
+      # single byte is pushed. CI "build succeeded" is not "artifact deployable".
+      - name: Build image (load for boot-certification)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: aion-runtime:boot-certify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Boot-certify (migrate → run → /health/ready) — GATE A
+        run: bash scripts/image-boot-check.sh aion-runtime:boot-certify "${GITHUB_SHA}"
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+
+      # Re-runs from the buildx cache produced above — no rebuild — so only the
+      # exact image that passed boot-certification is published.
+      - name: Publish certified image
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/${{ env.OWNER_LC }}/aion-runtime:${{ github.sha }}
-            ghcr.io/${{ env.OWNER_LC }}/aion-runtime:latest
+          tags: ${{ steps.refs.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

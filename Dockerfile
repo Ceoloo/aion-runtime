@@ -42,8 +42,25 @@ WORKDIR /app
 
 # Drop privileges: the built-in non-root `node` user owns nothing writable.
 COPY --from=build --chown=node:node /build/node_modules ./node_modules
+# @aion/core and @aion/data are file: deps: npm links them as RELATIVE symlinks
+# (node_modules/@aion/* -> ../../vendor/*). The vendor tree MUST travel with
+# node_modules or those symlinks dangle and `import '@aion/core'` throws at boot
+# (the v0.2.0 image shipped node_modules without vendor/ — the boot bug this
+# release fixes). The symlinks are relative, so ./vendor here keeps them valid.
+COPY --from=build --chown=node:node /build/vendor ./vendor
 COPY --from=build --chown=node:node /build/dist ./dist
 COPY --from=build --chown=node:node /build/package.json ./package.json
+
+# Regression guard for the v0.2.0 boot bug: fail the BUILD (never the deploy) if
+# the vendored packages did not travel with node_modules. The @aion/* entries
+# are symlinks into ./vendor, so `test -s <link>/dist/index.js` dangles (and
+# fails) if vendor/ is missing; the dynamic import then proves ESM resolution
+# through the package "exports" map works from the FINAL image layout.
+RUN set -eux; \
+    test -s node_modules/@aion/core/dist/index.js; \
+    test -s node_modules/@aion/data/dist/index.js; \
+    test -s dist/index.js; \
+    node --input-type=module -e "await import('@aion/core'); console.log('runtime image self-check OK')"
 
 USER node
 EXPOSE 8080
