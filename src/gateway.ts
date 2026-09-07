@@ -37,6 +37,12 @@
  *   GET  /v1/autonomy/grants/:grantId     — Mission 008 fetch grant
  *   GET  /v1/side-effects                 — Mission 009 list external side-effects
  *   GET  /v1/side-effects/:id             — Mission 009 fetch side-effect
+ *   POST /v1/implementations              — IE-001 create ImplementationCase
+ *   GET  /v1/implementations              — IE-001 list cases (tenant)
+ *   GET  /v1/implementations/:caseId      — IE-001 fetch case
+ *   POST /v1/implementations/:caseId/intake — IE-001 complete intake + qualify
+ *   POST /v1/implementations/:caseId/blueprint — IE-001 draft/edit blueprint
+ *   POST /v1/implementations/:caseId/blueprint/approve — IE-001 approve blueprint
  */
 import type { IncomingMessage } from 'node:http';
 import {
@@ -64,6 +70,16 @@ import {
   buildAutonomyEvidence,
   AutonomyGrant,
   AutonomyGrantId,
+  ImplementationCase,
+  ImplementationCaseId,
+  ImplementationIntake,
+  ImplementationPackage,
+  SolutionBlueprint,
+  applyIntake,
+  approveBlueprint,
+  attachBlueprintDraft,
+  createImplementationCase,
+  draftBlueprintFromCase,
   isAionError,
   newCommandId,
   newCorrelationId,
@@ -219,6 +235,46 @@ export async function handleGatewayRequest(
     const sideEffectMatch = /^\/v1\/side-effects\/([^/]+)$/.exec(path);
     if (method === 'GET' && sideEffectMatch) {
       return await getSideEffect(decodeURIComponent(sideEffectMatch[1]!), cp, req);
+    }
+
+    if (method === 'POST' && path === '/v1/implementations') {
+      return await createImplementation(await readJsonBody(req), cp, req);
+    }
+    if (method === 'GET' && path === '/v1/implementations') {
+      return await listImplementations(url, cp, req);
+    }
+    const implApproveMatch =
+      /^\/v1\/implementations\/([^/]+)\/blueprint\/approve$/.exec(path);
+    if (method === 'POST' && implApproveMatch) {
+      return await approveImplementationBlueprint(
+        decodeURIComponent(implApproveMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+      );
+    }
+    const implBlueprintMatch =
+      /^\/v1\/implementations\/([^/]+)\/blueprint$/.exec(path);
+    if (method === 'POST' && implBlueprintMatch) {
+      return await upsertImplementationBlueprint(
+        decodeURIComponent(implBlueprintMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+      );
+    }
+    const implIntakeMatch = /^\/v1\/implementations\/([^/]+)\/intake$/.exec(path);
+    if (method === 'POST' && implIntakeMatch) {
+      return await submitImplementationIntake(
+        decodeURIComponent(implIntakeMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+      );
+    }
+    const implMatch = /^\/v1\/implementations\/([^/]+)$/.exec(path);
+    if (method === 'GET' && implMatch) {
+      return await getImplementation(decodeURIComponent(implMatch[1]!), cp, req);
     }
 
     const evaluationMatch = /^\/v1\/evaluations\/([^/]+)$/.exec(path);
@@ -1899,4 +1955,298 @@ async function getService(serviceKey: string, cp: ControlPlane): Promise<Gateway
     return jsonError(404, 'service_not_found', `service ${keyParsed.data} not in catalog`);
   }
   return { status: 200, body: { service } };
+}
+
+// ── IE-001 Implementation Engine ────────────────────────────────────────────
+
+async function loadImplementationForTenant(
+  caseIdRaw: string,
+  callerTenant: string,
+  cp: ControlPlane,
+): Promise<{ caseRecord: ImplementationCase } | GatewayResponse> {
+  const parsed = ImplementationCaseId.safeParse(caseIdRaw);
+  if (!parsed.success) {
+    return jsonError(
+      400,
+      'invalid_case_id',
+      'caseId must be an ImplementationCaseId (icase_…)',
+    );
+  }
+  const caseRecord = await cp.dataLayer.implementationCases.get(parsed.data);
+  if (!caseRecord) {
+    return jsonError(404, 'case_not_found', `implementation case ${caseIdRaw} not found`);
+  }
+  if (caseRecord.tenantId !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot access case owned by ${caseRecord.tenantId}`,
+    );
+  }
+  return { caseRecord };
+}
+
+async function createImplementation(
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to create implementation cases (IE-001)',
+    );
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'implementation body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  if (raw.tenantId && raw.tenantId !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot create cases for ${String(raw.tenantId)}`,
+    );
+  }
+  try {
+    const caseRecord = createImplementationCase({
+      tenantId: callerTenant,
+      clientRef: String(raw.clientRef ?? ''),
+      clientName: String(raw.clientName ?? ''),
+      ownerId: String(raw.ownerId ?? ''),
+      ...(typeof raw.commercialStatus === 'string'
+        ? { commercialStatus: raw.commercialStatus as never }
+        : {}),
+      ...(typeof raw.nextAction === 'string' ? { nextAction: raw.nextAction } : {}),
+      ...(raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
+        ? { metadata: raw.metadata as Record<string, unknown> }
+        : {}),
+    });
+    await cp.dataLayer.implementationCases.save(caseRecord);
+    return { status: 201, body: { case: caseRecord } };
+  } catch (err) {
+    return jsonError(
+      400,
+      'invalid_implementation',
+      err instanceof Error ? err.message : 'failed to create implementation case',
+    );
+  }
+}
+
+async function listImplementations(
+  url: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to list implementation cases (IE-001)',
+    );
+  }
+  const params = new URL(url, 'http://localhost').searchParams;
+  const queryTenant = params.get('tenantId');
+  if (queryTenant && queryTenant !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot list cases for ${queryTenant}`,
+    );
+  }
+  const deliveryStatus = params.get('deliveryStatus') ?? undefined;
+  const cases = await cp.dataLayer.implementationCases.listForTenant(callerTenant, {
+    deliveryStatus: deliveryStatus ?? undefined,
+  });
+  return { status: 200, body: { cases, count: cases.length } };
+}
+
+async function getImplementation(
+  caseIdRaw: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to read implementation cases (IE-001)',
+    );
+  }
+  const loaded = await loadImplementationForTenant(caseIdRaw, callerTenant, cp);
+  if ('status' in loaded) return loaded;
+  return { status: 200, body: { case: loaded.caseRecord } };
+}
+
+async function submitImplementationIntake(
+  caseIdRaw: string,
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to submit intake (IE-001)',
+    );
+  }
+  const loaded = await loadImplementationForTenant(caseIdRaw, callerTenant, cp);
+  if ('status' in loaded) return loaded;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'intake body must be a JSON object');
+  }
+  const intakeParsed = ImplementationIntake.safeParse(body);
+  if (!intakeParsed.success) {
+    return jsonError(
+      400,
+      'invalid_intake',
+      intakeParsed.error.issues.map((i) => i.message).join('; '),
+    );
+  }
+  try {
+    const updated = applyIntake(loaded.caseRecord, intakeParsed.data);
+    await cp.dataLayer.implementationCases.save(updated);
+    return {
+      status: 200,
+      body: {
+        case: updated,
+        recommendation: updated.recommendation,
+      },
+    };
+  } catch (err) {
+    return jsonError(
+      409,
+      'illegal_transition',
+      err instanceof Error ? err.message : 'intake rejected',
+    );
+  }
+}
+
+async function upsertImplementationBlueprint(
+  caseIdRaw: string,
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to draft blueprints (IE-001)',
+    );
+  }
+  const loaded = await loadImplementationForTenant(caseIdRaw, callerTenant, cp);
+  if ('status' in loaded) return loaded;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'blueprint body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  const packageParsed = ImplementationPackage.safeParse(
+    raw.packageKey ??
+      loaded.caseRecord.recommendation?.humanOverridePackage ??
+      loaded.caseRecord.recommendation?.recommendedPackage,
+  );
+  if (!packageParsed.success) {
+    return jsonError(
+      400,
+      'invalid_package',
+      'packageKey required (or complete intake with a recommendable package first)',
+    );
+  }
+  const deliveryOwner =
+    typeof raw.deliveryOwner === 'string' && raw.deliveryOwner.trim()
+      ? raw.deliveryOwner
+      : loaded.caseRecord.ownerId;
+
+  try {
+    let blueprint: SolutionBlueprint;
+    if (raw.blueprint && typeof raw.blueprint === 'object') {
+      const drafted = draftBlueprintFromCase({
+        caseRecord: loaded.caseRecord,
+        packageKey: packageParsed.data,
+        deliveryOwner,
+      });
+      const merged = SolutionBlueprint.safeParse({
+        ...drafted,
+        ...(raw.blueprint as object),
+        version: drafted.version,
+        packageKey: packageParsed.data,
+        status: 'draft',
+        approvedAt: undefined,
+        approvedBy: undefined,
+        updatedAt: new Date().toISOString(),
+      });
+      if (!merged.success) {
+        return jsonError(
+          400,
+          'invalid_blueprint',
+          merged.error.issues.map((i) => i.message).join('; '),
+        );
+      }
+      blueprint = merged.data;
+    } else {
+      blueprint = draftBlueprintFromCase({
+        caseRecord: loaded.caseRecord,
+        packageKey: packageParsed.data,
+        deliveryOwner,
+        overrides:
+          raw.overrides && typeof raw.overrides === 'object'
+            ? (raw.overrides as Partial<SolutionBlueprint>)
+            : undefined,
+      });
+    }
+    const updated = attachBlueprintDraft(loaded.caseRecord, blueprint);
+    await cp.dataLayer.implementationCases.save(updated);
+    return { status: 200, body: { case: updated, blueprint: updated.blueprint } };
+  } catch (err) {
+    return jsonError(
+      409,
+      'illegal_transition',
+      err instanceof Error ? err.message : 'blueprint draft rejected',
+    );
+  }
+}
+
+async function approveImplementationBlueprint(
+  caseIdRaw: string,
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to approve blueprints (IE-001)',
+    );
+  }
+  const loaded = await loadImplementationForTenant(caseIdRaw, callerTenant, cp);
+  if ('status' in loaded) return loaded;
+  const raw =
+    body && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
+  const approvedBy =
+    typeof raw.approvedBy === 'string' && raw.approvedBy.trim()
+      ? raw.approvedBy
+      : loaded.caseRecord.ownerId;
+  try {
+    const updated = approveBlueprint(loaded.caseRecord, approvedBy);
+    await cp.dataLayer.implementationCases.save(updated);
+    return { status: 200, body: { case: updated, blueprint: updated.blueprint } };
+  } catch (err) {
+    return jsonError(
+      409,
+      'illegal_transition',
+      err instanceof Error ? err.message : 'blueprint approval rejected',
+    );
+  }
 }
