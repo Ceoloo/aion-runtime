@@ -38,7 +38,14 @@ $$;
 GRANT ALL ON SCHEMA public TO aion_migrator;
 
 -- ── Application role: connect + DML only, NEVER DDL ─────────────────────────
-GRANT CONNECT ON DATABASE aion_data TO aion_app;
+-- CONNECT is granted on whatever database this script runs in, so the grants
+-- are not coupled to a fixed database name (the Terraform `database_name` is a
+-- variable; hard-coding "aion_data" here would break any non-default name).
+DO $$
+BEGIN
+  EXECUTE format('GRANT CONNECT ON DATABASE %I TO aion_app', current_database());
+END
+$$;
 GRANT USAGE ON SCHEMA public TO aion_app;
 
 -- Read/write on all current tables…
