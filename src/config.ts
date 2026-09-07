@@ -26,6 +26,11 @@ export interface RuntimeConfig {
   databaseSsl: boolean;
   /** Run the controlled Core lifecycle self-check on boot. */
   runSmokeOnBoot: boolean;
+  /**
+   * Exact browser origins allowed for CORS (Operator Console on Vercel).
+   * Empty = no CORS headers (same-origin / non-browser clients only).
+   */
+  corsOrigins: string[];
 }
 
 export class ConfigError extends Error {
@@ -88,6 +93,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     ? env.DATABASE_SSL === 'true'
     : environment !== 'local';
 
+  const corsOrigins = (env.AION_CORS_ORIGINS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
   return {
     environment,
     databaseUrl,
@@ -95,6 +105,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     logLevel,
     databaseSsl,
     runSmokeOnBoot: env.RUN_SMOKE_ON_BOOT === 'true',
+    corsOrigins,
     release: {
       serviceVersion: env.SERVICE_VERSION ?? 'unknown',
       gitSha: env.GIT_SHA ?? 'unknown',
