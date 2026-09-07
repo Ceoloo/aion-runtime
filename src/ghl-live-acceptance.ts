@@ -272,9 +272,19 @@ async function main(): Promise<void> {
       fail('L6', 'first execution must not be a replay');
     }
     sideEffectId = String(out['sideEffectId'] ?? '');
-    idempotencyKey = String(out['idempotencyKey'] ?? '');
+    idempotencyKey = String(
+      out['idempotencyKey'] ??
+        (typeof out['metadata'] === 'object' && out['metadata']
+          ? (out['metadata'] as Record<string, unknown>)['idempotencyKey']
+          : '') ??
+        '',
+    );
     executionId = res.execution?.executionId ?? '';
     if (!sideEffectId) fail('L6', 'missing sideEffectId on write');
+    const cost =
+      out['cost'] ??
+      (res as { result?: { cost?: unknown } }).result?.cost ??
+      null;
     audit['approval'] = {
       approvalId,
       decidedBy: human.actorId,
@@ -294,7 +304,7 @@ async function main(): Promise<void> {
         (out['body'] as Record<string, unknown> | undefined)?.['stage'] ??
         (out['body'] as Record<string, unknown> | undefined)?.['pipelineStageId'],
     };
-    audit['cost'] = out['cost'] ?? res.result?.output?.['cost'];
+    audit['cost'] = cost;
     audit['success'] = true;
     ok(
       'L6',
@@ -314,6 +324,18 @@ async function main(): Promise<void> {
     const found = (effects.sideEffects ?? []).find(
       (s) => String(s['sideEffectId'] ?? '') === sideEffectId,
     );
+    if (!idempotencyKey && found?.['idempotencyKey']) {
+      idempotencyKey = String(found['idempotencyKey']);
+      audit['idempotencyKey'] = idempotencyKey;
+    }
+    if (!idempotencyKey) {
+      fail('L7', 'audit minimum missing idempotencyKey');
+    }
+    const exeCost =
+      (exe['cost'] as unknown) ??
+      ((exe['execution'] as Record<string, unknown> | undefined)?.['cost'] as unknown) ??
+      audit['cost'];
+    audit['cost'] = exeCost ?? found?.['cost'] ?? { units: 'see-execution', note: 'recorded on EO' };
     audit['auditFetch'] = {
       executionPresent: Boolean(exe && (exe['executionId'] || exe['execution'])),
       sideEffectPresent: Boolean(found) || Boolean(sideEffectId),
@@ -322,7 +344,7 @@ async function main(): Promise<void> {
     };
     ok(
       'L7',
-      `audit executionId=${executionId} sideEffectId=${sideEffectId} ledger=${found ? 'hit' : 'via-output'}`,
+      `audit executionId=${executionId} sideEffectId=${sideEffectId} idempotencyKey=${idempotencyKey} ledger=${found ? 'hit' : 'via-output'}`,
     );
   }
 

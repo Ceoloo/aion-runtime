@@ -306,6 +306,7 @@ export class GhlAdapter implements ExecutionAdapter {
         backend: this.backend.name,
         idempotentReplay: !saved.inserted,
         sideEffectId: recorded.sideEffectId,
+        idempotencyKey: recorded.idempotencyKey,
         externalResourceId: recorded.externalResourceId,
         externalRequestId: recorded.externalRequestId,
         action,
