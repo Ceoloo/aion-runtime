@@ -24,7 +24,8 @@
     "proof:mission005": "bash scripts/mission005-proof-matrix.sh",
     "proof:mission006": "bash scripts/mission006-proof-matrix.sh",
     "proof:mission007": "bash scripts/mission007-proof-matrix.sh",
-    "proof:mission008": "bash scripts/mission008-proof-matrix.sh"
+    "proof:mission008": "bash scripts/mission008-proof-matrix.sh",
+    "proof:mission009": "bash scripts/mission009-proof-matrix.sh"
   },
   "dependencies": {
     "@aion/core": "file:vendor/aion-core",
