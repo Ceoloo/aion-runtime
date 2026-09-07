@@ -35,6 +35,8 @@
  *   POST /v1/autonomy/demote              — Mission 008 revoke / lower grant
  *   GET  /v1/autonomy/grants              — Mission 008 list grants
  *   GET  /v1/autonomy/grants/:grantId     — Mission 008 fetch grant
+ *   GET  /v1/side-effects                 — Mission 009 list external side-effects
+ *   GET  /v1/side-effects/:id             — Mission 009 fetch side-effect
  */
 import type { IncomingMessage } from 'node:http';
 import {
@@ -65,6 +67,7 @@ import {
   isAionError,
   newCommandId,
   newCorrelationId,
+  newExecutionId,
   newRequestId,
   newRunId,
   recommendRoute,
@@ -208,6 +211,14 @@ export async function handleGatewayRequest(
         cp,
         req,
       );
+    }
+
+    if (method === 'GET' && path === '/v1/side-effects') {
+      return await listSideEffects(url, cp, req);
+    }
+    const sideEffectMatch = /^\/v1\/side-effects\/([^/]+)$/.exec(path);
+    if (method === 'GET' && sideEffectMatch) {
+      return await getSideEffect(decodeURIComponent(sideEffectMatch[1]!), cp, req);
     }
 
     const evaluationMatch = /^\/v1\/evaluations\/([^/]+)$/.exec(path);
@@ -552,6 +563,9 @@ async function submitCommand(
     ...(raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
       ? (raw.metadata as Record<string, unknown>)
       : {}),
+    ...(actor.actorType === 'agent' && (actor as AgentActor).tenantId
+      ? { tenantId: (actor as AgentActor).tenantId }
+      : {}),
     ...(catalogServiceKey ? { serviceKey: catalogServiceKey } : {}),
     ...(catalogApprovalRequired ? { approvalRequired: true } : {}),
     ...(catalogService
@@ -563,7 +577,13 @@ async function submitCommand(
       : {}),
     ...(autonomyGrant ? { autonomyGrant } : {}),
     ...(raw.manualAutonomyDemote === true ? { manualAutonomyDemote: true } : {}),
+    ...(typeof raw.approvalId === 'string' ? { approvalId: raw.approvalId } : {}),
   };
+
+  const mintedExecutionId =
+    typeof raw.executionId === 'string' && raw.executionId.length > 0
+      ? raw.executionId
+      : newExecutionId();
 
   const input: CommandInput = {
     name: raw.name,
@@ -589,7 +609,7 @@ async function submitCommand(
       : catalogRisk
         ? { riskLevel: catalogRisk }
         : {}),
-    ...(typeof raw.executionId === 'string' ? { executionId: raw.executionId } : {}),
+    executionId: mintedExecutionId,
     ...(typeof raw.parentExecutionId === 'string'
       ? { parentExecutionId: raw.parentExecutionId }
       : {}),
@@ -613,7 +633,8 @@ async function submitCommand(
     result: result.result,
     executionId:
       (typeof raw.executionId === 'string' ? (raw.executionId as never) : undefined) ??
-      result.command.executionId,
+      result.command.executionId ??
+      (mintedExecutionId as never),
     parentExecutionId:
       (typeof raw.parentExecutionId === 'string'
         ? (raw.parentExecutionId as never)
@@ -1596,6 +1617,61 @@ async function getAutonomyGrant(
     );
   }
   return { status: 200, body: { grant } };
+}
+
+async function listSideEffects(
+  url: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to list side-effects (Mission 009)',
+    );
+  }
+  const params = new URL(url, 'http://localhost').searchParams;
+  const queryTenant = params.get('tenantId');
+  if (queryTenant && queryTenant !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot list side-effects for ${queryTenant}`,
+    );
+  }
+  const effects = await cp.dataLayer.externalSideEffects.listForTenant(callerTenant, {
+    ...(params.get('executionId') ? { executionId: params.get('executionId')! } : {}),
+  });
+  return { status: 200, body: { sideEffects: effects, count: effects.length } };
+}
+
+async function getSideEffect(
+  sideEffectIdRaw: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to read side-effects (Mission 009)',
+    );
+  }
+  const effect = await cp.dataLayer.externalSideEffects.get(sideEffectIdRaw);
+  if (!effect) {
+    return jsonError(404, 'side_effect_not_found', `side-effect ${sideEffectIdRaw} not found`);
+  }
+  if (effect.tenantId !== callerTenant) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot read side-effect owned by ${effect.tenantId}`,
+    );
+  }
+  return { status: 200, body: { sideEffect: effect } };
 }
 
 /**

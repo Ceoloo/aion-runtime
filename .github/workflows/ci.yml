@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   verify:
-    name: typecheck · build · portability · acceptance · mission001-proof · mission002-proof · mission003-proof · mission004-proof · mission005-proof · mission006-proof · mission007-proof · mission008-proof · platform-v01-cert
+    name: typecheck · build · portability · acceptance · mission001-proof · mission002-proof · mission003-proof · mission004-proof · mission005-proof · mission006-proof · mission007-proof · mission008-proof · mission009-proof · platform-v01-cert
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -131,6 +131,11 @@ jobs:
           GIT_SHA: ${{ github.sha }}
           PORT: '8098'
         run: npm run proof:mission008
+
+      - name: Mission 009 proof matrix (GHL client plane A–J)
+        env:
+          PORT: "8099"
+        run: npm run proof:mission009
 
       - name: Platform v0.1 multi-domain certification
         env:

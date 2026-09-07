@@ -360,6 +360,27 @@ export class RuntimeClient {
     return this.request('GET', `/v1/services/${encodeURIComponent(serviceKey)}`);
   }
 
+  /** Mission 009 — list durable external side-effects for the caller tenant. */
+  async listSideEffects(
+    opts?: TenantScopedRequest & { executionId?: string },
+  ): Promise<unknown> {
+    const qs = opts?.executionId
+      ? `?executionId=${encodeURIComponent(opts.executionId)}`
+      : '';
+    return this.request('GET', `/v1/side-effects${qs}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  async getSideEffect(
+    sideEffectId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('GET', `/v1/side-effects/${encodeURIComponent(sideEffectId)}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
   private async request(
     method: string,
     path: string,
