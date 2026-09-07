@@ -1,0 +1,44 @@
+{
+  "release": "execution-platform-v0.1.0",
+  "title": "AION Execution Platform v0.1.0 \u2014 Multi-Domain Execution Proof",
+  "result": "PASS",
+  "certifiedAt": "2026-09-06T19:12:21Z",
+  "harness": "npm run certify:platform-v01",
+  "components": {
+    "aion-core": {
+      "gitSha": "710f4866df3c51e54ca37d430f0aa7171c611ac2",
+      "packageVersion": "0.1.0"
+    },
+    "aion-data": {
+      "gitSha": "2091bad8d7483be6c44b57e6605445cc2fdb5c3b",
+      "packageVersion": "0.1.0",
+      "schemaVersion": "0003"
+    },
+    "aion-runtime": {
+      "gitSha": "a909e0054a1eaef861183cf45e083b58d6e47ed7",
+      "packageVersion": "0.1.0",
+      "serviceVersion": "0.1.0"
+    },
+    "aion-docs": {
+      "gitSha": "3a32be1e300ff920cf6fecee0562052db491f133"
+    }
+  },
+  "catalogVersion": "v0",
+  "catalogServiceCount": 17,
+  "criteria": {
+    "CERT-CATALOG": "PASS",
+    "CERT-REGRESSION": "PASS",
+    "CERT-CROSS": "PASS",
+    "CERT-GOVERNANCE": "PASS",
+    "CERT-ECONOMICS": "PASS",
+    "CERT-ATTRIBUTION": "PASS",
+    "CERT-ISOLATION": "PASS",
+    "CERT-DURABILITY": "PASS"
+  },
+  "notes": [
+    "Tag execution-platform-v0.1.0 is immutable. Fixes ship as v0.1.1+.",
+    "v0.1.0 certifies multi-domain reuse of shared contracts/catalog/data/runtime.",
+    "Tenant isolation (Mission 003) is NOT guaranteed by this release.",
+    "Platform code tags point at the certified SHAs listed under components."
+  ]
+}

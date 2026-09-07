@@ -157,3 +157,67 @@ PROOF_MODE=d-resume \
   node dist/platform-v01-certification.js
 
 echo "[cert-v01] PASS — AION Execution Platform v0.1 multi-domain certification green"
+
+# ── Machine-readable release manifest (immutable freeze evidence) ──────────
+# Captures exact SHAs + schema/catalog/runtime versions + criterion results.
+# Written under releases/ so the freeze commit records what was certified.
+MANIFEST_DIR="${CERT_MANIFEST_DIR:-$ROOT/releases}"
+mkdir -p "$MANIFEST_DIR"
+MANIFEST_PATH="${CERT_MANIFEST_PATH:-$MANIFEST_DIR/execution-platform-v0.1.0.manifest.json}"
+CERTIFIED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SCHEMA_VERSION="${CERT_SCHEMA_VERSION:-0003}"
+CATALOG_VERSION="${CERT_CATALOG_VERSION:-v0}"
+CORE_SHA="${CERT_CORE_SHA:-unknown}"
+DATA_SHA="${CERT_DATA_SHA:-unknown}"
+RUNTIME_SHA="${CERT_RUNTIME_SHA:-${GIT_SHA}}"
+DOCS_SHA="${CERT_DOCS_SHA:-unknown}"
+SERVICE_COUNT="$(psql "$DATABASE_URL" -Atc 'SELECT count(*) FROM services;' 2>/dev/null || echo unknown)"
+
+cat >"$MANIFEST_PATH" <<EOF
+{
+  "release": "execution-platform-v0.1.0",
+  "title": "AION Execution Platform v0.1.0 — Multi-Domain Execution Proof",
+  "result": "PASS",
+  "certifiedAt": "${CERTIFIED_AT}",
+  "harness": "npm run certify:platform-v01",
+  "components": {
+    "aion-core": {
+      "gitSha": "${CORE_SHA}",
+      "packageVersion": "0.1.0"
+    },
+    "aion-data": {
+      "gitSha": "${DATA_SHA}",
+      "packageVersion": "0.1.0",
+      "schemaVersion": "${SCHEMA_VERSION}"
+    },
+    "aion-runtime": {
+      "gitSha": "${RUNTIME_SHA}",
+      "packageVersion": "0.1.0",
+      "serviceVersion": "${SERVICE_VERSION}"
+    },
+    "aion-docs": {
+      "gitSha": "${DOCS_SHA}"
+    }
+  },
+  "catalogVersion": "${CATALOG_VERSION}",
+  "catalogServiceCount": ${SERVICE_COUNT},
+  "criteria": {
+    "CERT-CATALOG": "PASS",
+    "CERT-REGRESSION": "PASS",
+    "CERT-CROSS": "PASS",
+    "CERT-GOVERNANCE": "PASS",
+    "CERT-ECONOMICS": "PASS",
+    "CERT-ATTRIBUTION": "PASS",
+    "CERT-ISOLATION": "PASS",
+    "CERT-DURABILITY": "PASS"
+  },
+  "notes": [
+    "Tag execution-platform-v0.1.0 is immutable. Fixes ship as v0.1.1+.",
+    "v0.1.0 certifies multi-domain reuse of shared contracts/catalog/data/runtime.",
+    "Tenant isolation (Mission 003) is NOT guaranteed by this release."
+  ]
+}
+EOF
+
+echo "[cert-v01] wrote release manifest → ${MANIFEST_PATH}"
+cat "$MANIFEST_PATH"
