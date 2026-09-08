@@ -9,6 +9,7 @@ export {
   RuntimeApiError,
   type RuntimeClientOptions,
   type SubmitCommandRequest,
+  type RunMissionRequest,
   type RuntimeApiErrorBody,
 } from './runtime-client.js';
 

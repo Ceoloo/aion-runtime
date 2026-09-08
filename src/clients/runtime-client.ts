@@ -39,6 +39,34 @@ export interface SubmitCommandRequest {
   payload?: Record<string, unknown>;
   riskLevel?: RiskLevel | string;
   metadata?: Record<string, unknown>;
+  /** Mission 005 — attributed economic value stored on the Execution Object. */
+  revenueAttributed?: number;
+  /** Optional human-readable outcome summary on the Execution Object. */
+  outcomeSummary?: string;
+  /** Mission 008 — environment scope for AutonomyGrant lookup. */
+  environment?: 'staging' | 'production';
+  /** Mission 004 lineage — optional on single-command submit. */
+  executionId?: string;
+  parentExecutionId?: string;
+  rootExecutionId?: string;
+}
+
+export interface RunMissionRequest {
+  actor: Actor;
+  /** Already-saved mission id (omit when providing inline `mission`). */
+  missionId?: string;
+  /** Already-saved workflow id (omit when providing inline `workflow`). */
+  workflowId?: string;
+  /** Inline mission object — saved before run when present. */
+  mission?: Record<string, unknown>;
+  /** Inline workflow object — saved before run when present. */
+  workflow?: Record<string, unknown>;
+  stepPayloads?: Record<string, Record<string, unknown>>;
+  resumeFromStep?: number;
+  rootExecutionId?: string;
+  parentExecutionId?: string;
+  requestIdPrefix?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface RuntimeApiErrorBody {
@@ -51,6 +79,7 @@ export class RuntimeApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly body?: unknown,
   ) {
     super(message);
     this.name = 'RuntimeApiError';
@@ -70,6 +99,11 @@ export class RuntimeClient {
 
   async submitCommand(input: SubmitCommandRequest): Promise<unknown> {
     return this.request('POST', '/v1/commands', { body: input });
+  }
+
+  /** Mission 004 — run or resume a multi-step mission orchestration. */
+  async runMission(input: RunMissionRequest): Promise<unknown> {
+    return this.request('POST', '/v1/missions/run', { body: input });
   }
 
   async getRun(runId: string): Promise<unknown> {
@@ -106,12 +140,245 @@ export class RuntimeClient {
     });
   }
 
+  /** Mission 004 — list Execution Objects under a shared root lineage tree. */
+  async getExecutionsByRoot(
+    rootExecutionId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request(
+      'GET',
+      `/v1/executions/by-root/${encodeURIComponent(rootExecutionId)}`,
+      { tenantId: opts?.tenantId },
+    );
+  }
+
+  /** Mission 005 — mission-level economics rollup (tenant header required). */
+  async getMissionEconomics(
+    missionId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request(
+      'GET',
+      `/v1/missions/${encodeURIComponent(missionId)}/economics`,
+      { tenantId: opts?.tenantId },
+    );
+  }
+
+  /**
+   * Mission 005 — scope / holding economics rollup.
+   * Holding = tenant aggregate; optional company/venture/project dims.
+   */
+  async getScopeEconomics(
+    scope: {
+      tenantId?: string;
+      companyId?: string;
+      ventureId?: string;
+      projectId?: string;
+    } = {},
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (scope.tenantId) params.set('tenantId', scope.tenantId);
+    if (scope.companyId) params.set('companyId', scope.companyId);
+    if (scope.ventureId) params.set('ventureId', scope.ventureId);
+    if (scope.projectId) params.set('projectId', scope.projectId);
+    const qs = params.toString();
+    return this.request('GET', `/v1/economics${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId ?? scope.tenantId,
+    });
+  }
+
+  /** Mission 006 — list missions referenced by the caller tenant. */
+  async listMissions(opts?: TenantScopedRequest): Promise<unknown> {
+    return this.request('GET', '/v1/missions', { tenantId: opts?.tenantId });
+  }
+
+  /** Mission 006 — fetch one mission (tenant-gated via executions). */
+  async getMission(missionId: string, opts?: TenantScopedRequest): Promise<unknown> {
+    return this.request('GET', `/v1/missions/${encodeURIComponent(missionId)}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 006 — recent executions for the caller tenant. */
+  async listExecutions(
+    opts?: TenantScopedRequest & { limit?: number },
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+    const qs = params.toString();
+    return this.request('GET', `/v1/executions${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 006 — approval inspect queue for the caller tenant. */
+  async listApprovals(
+    opts?: TenantScopedRequest & { status?: 'pending' | 'granted' | 'rejected' },
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.status) params.set('status', opts.status);
+    const qs = params.toString();
+    return this.request('GET', `/v1/approvals${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 007 — record EvaluationResult. */
+  async createEvaluation(
+    body: Record<string, unknown>,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('POST', '/v1/evaluations', {
+      body,
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 007 — fetch evaluation by id. */
+  async getEvaluation(
+    evaluationId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('GET', `/v1/evaluations/${encodeURIComponent(evaluationId)}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 007 — evaluation for an execution. */
+  async getEvaluationByExecution(
+    executionId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request(
+      'GET',
+      `/v1/executions/${encodeURIComponent(executionId)}/evaluation`,
+      { tenantId: opts?.tenantId },
+    );
+  }
+
+  /** Mission 007 — performance scorecards. */
+  async getScorecards(
+    opts?: TenantScopedRequest & { capability?: string; serviceKey?: string },
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.capability) params.set('capability', opts.capability);
+    if (opts?.serviceKey) params.set('serviceKey', opts.serviceKey);
+    if (opts?.tenantId) params.set('tenantId', opts.tenantId);
+    const qs = params.toString();
+    return this.request('GET', `/v1/scorecards${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 007 — recommendation-only routing. */
+  async recommendRoute(
+    opts?: TenantScopedRequest & { capability?: string; serviceKey?: string },
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.capability) params.set('capability', opts.capability);
+    if (opts?.serviceKey) params.set('serviceKey', opts.serviceKey);
+    if (opts?.tenantId) params.set('tenantId', opts.tenantId);
+    const qs = params.toString();
+    return this.request('GET', `/v1/routing/recommend${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 007 — manual routing override (does not auto-execute). */
+  async setRoutingOverride(
+    body: Record<string, unknown>,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('POST', '/v1/routing/override', {
+      body,
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 008 — dry-run eligible autonomy level. */
+  async evaluateAutonomy(
+    body: Record<string, unknown>,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('POST', '/v1/autonomy/evaluate', {
+      body,
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 008 — promote / create AutonomyGrant. */
+  async promoteAutonomy(
+    body: Record<string, unknown>,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('POST', '/v1/autonomy/promote', {
+      body,
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 008 — demote / revoke AutonomyGrant. */
+  async demoteAutonomy(
+    body: Record<string, unknown>,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('POST', '/v1/autonomy/demote', {
+      body,
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 008 — list autonomy grants. */
+  async listAutonomyGrants(
+    opts?: TenantScopedRequest & { agentId?: string; status?: string },
+  ): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (opts?.agentId) params.set('agentId', opts.agentId);
+    if (opts?.status) params.set('status', opts.status);
+    const qs = params.toString();
+    return this.request('GET', `/v1/autonomy/grants${qs ? `?${qs}` : ''}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  /** Mission 008 — fetch one grant. */
+  async getAutonomyGrant(
+    grantId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('GET', `/v1/autonomy/grants/${encodeURIComponent(grantId)}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
   async listServices(): Promise<unknown> {
     return this.request('GET', '/v1/services');
   }
 
   async getService(serviceKey: string): Promise<unknown> {
     return this.request('GET', `/v1/services/${encodeURIComponent(serviceKey)}`);
+  }
+
+  /** Mission 009 — list durable external side-effects for the caller tenant. */
+  async listSideEffects(
+    opts?: TenantScopedRequest & { executionId?: string },
+  ): Promise<unknown> {
+    const qs = opts?.executionId
+      ? `?executionId=${encodeURIComponent(opts.executionId)}`
+      : '';
+    return this.request('GET', `/v1/side-effects${qs}`, {
+      tenantId: opts?.tenantId,
+    });
+  }
+
+  async getSideEffect(
+    sideEffectId: string,
+    opts?: TenantScopedRequest,
+  ): Promise<unknown> {
+    return this.request('GET', `/v1/side-effects/${encodeURIComponent(sideEffectId)}`, {
+      tenantId: opts?.tenantId,
+    });
   }
 
   private async request(
@@ -147,6 +414,7 @@ export class RuntimeClient {
         res.status,
         typeof err.error === 'string' ? err.error : 'http_error',
         typeof err.message === 'string' ? err.message : `HTTP ${res.status}`,
+        parsed,
       );
     }
     return parsed;
