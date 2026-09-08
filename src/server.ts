@@ -9,10 +9,17 @@
  * Execution Gateway — reconciled INTO this same Runtime process (not a second
  * gateway service). See src/gateway.ts and Notion Progress Assessment Sep 2026.
  *   POST /v1/commands
+ *   POST /v1/missions/run
  *   GET  /v1/runs/:runId
  *   POST /v1/approvals/:approvalId/decision
  *   GET  /v1/executions/:executionId
  *   GET  /v1/executions/by-run/:runId
+ *   GET  /v1/executions/by-root/:rootExecutionId
+ *
+ * CORS (OPS-001): when AION_CORS_ORIGINS is set, approved browser origins
+ * (e.g. Vercel Operator Console) may call the gateway. Origins are an allowlist
+ * only — they do not grant tenant or actor authority. VITE_* frontend hints are
+ * never trusted here.
  */
 import http from 'node:http';
 import type { ControlPlane } from './control-plane.js';
@@ -23,6 +30,24 @@ import { handleGatewayRequest } from './gateway.js';
 export interface Server {
   listen(): Promise<void>;
   close(): Promise<void>;
+}
+
+function corsHeaders(
+  config: RuntimeConfig,
+  req: http.IncomingMessage,
+): Record<string, string> | null {
+  if (config.corsOrigins.length === 0) return null;
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string' || origin.length === 0) return null;
+  if (!config.corsOrigins.includes(origin)) return null;
+  return {
+    'access-control-allow-origin': origin,
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers':
+      'content-type, x-aion-tenant-id, authorization',
+    'access-control-max-age': '86400',
+    vary: 'Origin',
+  };
 }
 
 export function createServer(
@@ -42,10 +67,14 @@ export function createServer(
     const started = Date.now();
     const url = req.url ?? '/';
     const method = req.method ?? 'GET';
+    const cors = corsHeaders(config, req);
 
     const send = (status: number, body: unknown): void => {
       const payload = JSON.stringify(body);
-      res.writeHead(status, { 'content-type': 'application/json' });
+      res.writeHead(status, {
+        'content-type': 'application/json',
+        ...(cors ?? {}),
+      });
       res.end(payload);
       logger.info('http_request', {
         operation: `${method} ${url}`,
@@ -53,6 +82,21 @@ export function createServer(
         latency_ms: Date.now() - started,
       });
     };
+
+    // CORS preflight — only for allowlisted origins.
+    if (method === 'OPTIONS') {
+      if (cors) {
+        res.writeHead(204, cors);
+        res.end();
+        return;
+      }
+      if (config.corsOrigins.length > 0) {
+        send(403, { error: 'cors_origin_denied' });
+        return;
+      }
+      send(405, { error: 'method_not_allowed' });
+      return;
+    }
 
     // Health endpoints first — cheap, GET-only.
     if (method === 'GET' && url === '/health/live') {
@@ -98,7 +142,12 @@ export function createServer(
     listen(): Promise<void> {
       return new Promise((resolve) => {
         server.listen(config.port, () => {
-          logger.info('listening', { operation: 'startup', status: 'ok', port: config.port });
+          logger.info('listening', {
+            operation: 'startup',
+            status: 'ok',
+            port: config.port,
+            cors_origins: String(config.corsOrigins.length),
+          });
           resolve();
         });
       });

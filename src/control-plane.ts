@@ -9,6 +9,7 @@
  */
 import {
   Orchestrator,
+  MissionOrchestrator,
   PolicyEngine,
   ExecutionRegistry,
   ApprovalGate,
@@ -18,9 +19,15 @@ import {
   MockExecutionAdapter,
   capability,
 } from '@aion/core';
-import type { ExecutionAdapter, Capability } from '@aion/core';
+import type {
+  ExecutionAdapter,
+  Capability,
+  RoutingOverride,
+  RiskLevel,
+} from '@aion/core';
 import { createDataLayer, type DataLayer } from '@aion/data';
 import type { RuntimeConfig } from './config.js';
+import { GhlAdapter, MISSION_009_CAPABILITIES, createGhlBackendFromEnv } from './adapters/ghl/index.js';
 
 /** The low-risk capability used by the boot self-check (aion-infra §45). */
 export const SMOKE_CAPABILITY: Capability = capability('infra.smoke');
@@ -50,8 +57,14 @@ export const MISSION_002_CAPABILITIES: Capability[] = [
   capability('media.performance.ingest'),
 ];
 
+/** Mission 004 client-money path — legacy GHL upsert capability (mapped by GhlAdapter). */
+export const MISSION_004_CAPABILITIES: Capability[] = [
+  capability('client.ghl.contact.upsert'),
+];
 
-const DEFAULT_CAPABILITY_RISK: Record<string, 'R0' | 'R1' | 'R2'> = {
+export { MISSION_009_CAPABILITIES };
+
+const DEFAULT_CAPABILITY_RISK: Record<string, RiskLevel> = {
   'infra.smoke': 'R0',
   'revenue.lead.research': 'R1',
   'revenue.lead.enrich': 'R1',
@@ -70,9 +83,27 @@ const DEFAULT_CAPABILITY_RISK: Record<string, 'R0' | 'R1' | 'R2'> = {
   'media.asset.produce': 'R1',
   'media.post.publish': 'R2',
   'media.performance.ingest': 'R1',
+  // M004 legacy mock capability — remains R1 so prior proofs stay green.
+  'client.ghl.contact.upsert': 'R1',
+  // Mission 009 CRM / GHL
+  'crm.contact.read': 'R1',
+  'crm.contact.search': 'R1',
+  'crm.contact.enrich': 'R1',
+  'crm.contact.update': 'R2',
+  'crm.opportunity.read': 'R1',
+  'crm.opportunity.search': 'R1',
+  'crm.opportunity.create': 'R2',
+  'crm.opportunity.update': 'R2',
+  'crm.pipeline.read': 'R1',
+  'crm.conversation.read': 'R1',
+  'crm.appointment.read': 'R1',
+  'crm.note.create': 'R1',
+  'crm.task.create': 'R1',
+  'crm.message.draft': 'R2',
+  'crm.message.send': 'R3',
 };
 
-function defaultAdapters(): ExecutionAdapter[] {
+function baseMockAdapters(): ExecutionAdapter[] {
   return [
     new MockExecutionAdapter({
       name: 'smoke-mock',
@@ -83,7 +114,6 @@ function defaultAdapters(): ExecutionAdapter[] {
     new MockExecutionAdapter({
       name: 'mission-001-mock',
       capabilities: MISSION_001_CAPABILITIES,
-      // Non-zero cost so Week 3 cost/outcome attribution is observable.
       cost: { units: 5, tokens: 100 },
       output: { value: { stub: true, source: 'mission-001-mock' } },
       durationMs: 5,
@@ -101,8 +131,15 @@ function defaultAdapters(): ExecutionAdapter[] {
 export interface ControlPlane {
   dataLayer: DataLayer;
   orchestrator: Orchestrator;
+  /** Mission 004 sequential multi-step runner over durable missions/workflows. */
+  missionOrchestrator: MissionOrchestrator;
   /** Shared policy engine — Runtime authorization boundary (Mission 003). */
   policyEngine: PolicyEngine;
+  /**
+   * Mission 007 — process-local manual routing overrides (recommendation-only).
+   * Keyed by `${tenantId}|${capability||serviceKey||*}`. Not adaptive auto-routing.
+   */
+  routingOverrides: Map<string, RoutingOverride>;
   /** SELECT 1 against the app connection — the readiness probe's DB check. */
   checkDatabase(): Promise<void>;
   close(): Promise<void>;
@@ -115,23 +152,17 @@ export interface ControlPlane {
  */
 export function buildControlPlane(
   config: RuntimeConfig,
-  adapters: ExecutionAdapter[] = defaultAdapters(),
+  adapters?: ExecutionAdapter[],
 ): ControlPlane {
   const dataLayer = createDataLayer({
     connectionString: config.databaseUrl,
     applicationName: `aion-runtime-${config.environment}`,
     ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
-    // Bounded pool + timeouts so a stuck DB surfaces fast instead of hanging.
     maxConnections: 5,
     connectionTimeoutMs: 5000,
     statementTimeoutMs: 15000,
   });
 
-  // Fail SAFE, not fatal: when the database drops (restart, failover, network
-  // blip) node-postgres emits 'error' on idle pool clients. Without a listener
-  // that event crashes the process. We swallow it with a non-secret structured
-  // log so the runtime STAYS UP and merely reports not-ready until the DB
-  // returns — readiness then recovers with no redeploy (aion-infra §62).
   dataLayer.pool.on('error', (err: Error) => {
     process.stderr.write(
       `${JSON.stringify({
@@ -146,15 +177,31 @@ export function buildControlPlane(
     );
   });
 
+  const resolvedAdapters =
+    adapters ??
+    [
+      ...baseMockAdapters(),
+      // GHL adapter first among CRM handlers — governed external plane (M009).
+      new GhlAdapter({
+        sideEffects: dataLayer.externalSideEffects,
+        backend: createGhlBackendFromEnv(),
+      }),
+    ];
+
   const clock = systemClock;
   const events = new EventEmitter(dataLayer.events, clock);
   const telemetry = new Telemetry(dataLayer.telemetry, clock);
-  // R2 capabilities must be explicitly gated — risk classification alone does
-  // not pause for approval (PolicyEngine.requiresApproval). Catalog marks
-  // revenue.followup.execute as approvalRequired; honor that here.
-  const gatedCapabilities = [...MISSION_001_CAPABILITIES, ...MISSION_002_CAPABILITIES].filter(
-    (cap) => DEFAULT_CAPABILITY_RISK[cap] === 'R2',
-  );
+
+  // Gate R2 catalog capabilities + all R3 (message.send always human-gated).
+  const gatedCapabilities = [
+    ...MISSION_001_CAPABILITIES,
+    ...MISSION_002_CAPABILITIES,
+    ...MISSION_009_CAPABILITIES,
+  ].filter((cap) => {
+    const risk = DEFAULT_CAPABILITY_RISK[cap];
+    return risk === 'R2' || risk === 'R3';
+  });
+
   const policyEngine = new PolicyEngine(
     {
       risk: { capabilityRisk: DEFAULT_CAPABILITY_RISK },
@@ -165,7 +212,7 @@ export function buildControlPlane(
   const approvalGate = new ApprovalGate(dataLayer.approvals, clock);
 
   const registry = new ExecutionRegistry();
-  for (const adapter of adapters) registry.register(adapter);
+  for (const adapter of resolvedAdapters) registry.register(adapter);
 
   const orchestrator = new Orchestrator({
     policyEngine,
@@ -177,10 +224,19 @@ export function buildControlPlane(
     clock,
   });
 
+  const missionOrchestrator = new MissionOrchestrator({
+    orchestrator,
+    missions: dataLayer.missions,
+    workflows: dataLayer.workflows,
+    clock,
+  });
+
   return {
     dataLayer,
     orchestrator,
+    missionOrchestrator,
     policyEngine,
+    routingOverrides: new Map(),
     async checkDatabase(): Promise<void> {
       await dataLayer.pool.query('SELECT 1');
     },
