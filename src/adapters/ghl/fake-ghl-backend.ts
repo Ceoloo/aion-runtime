@@ -134,6 +134,13 @@ export class FakeGhlBackend implements GhlBackend {
     payload: Record<string, unknown>,
   ): Record<string, unknown> {
     switch (action) {
+      case 'location.read': {
+        return {
+          id: 'ghl_location_seed',
+          name: 'AION Fake Location',
+          locationId: 'ghl_location_seed',
+        };
+      }
       case 'contact.read': {
         const id = str(payload['contactId']);
         const contact = id ? ws.contacts.get(id) : undefined;

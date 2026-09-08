@@ -89,6 +89,20 @@ export class LiveGhlBackend implements GhlBackend {
     payload: Record<string, unknown>,
   ): Promise<GhlBackendResult> {
     switch (action) {
+      case 'location.read': {
+        const data = await this.api(
+          connection,
+          'GET',
+          `/locations/${encodeURIComponent(connection.locationId)}`,
+        );
+        if (!data.ok) return data;
+        const loc = asRecord(asRecord(data.body)['location'] ?? data.body);
+        return ok(connection.locationId, data.externalRequestId, {
+          id: str(loc['id']) ?? connection.locationId,
+          name: str(loc['name']) ?? str(loc['businessName']),
+          locationId: connection.locationId,
+        });
+      }
       case 'contact.read': {
         const id = str(payload['contactId']);
         if (!id) return fail('GHL_BAD_REQUEST', 'contactId required');

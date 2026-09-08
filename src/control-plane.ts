@@ -94,6 +94,7 @@ const DEFAULT_CAPABILITY_RISK: Record<string, RiskLevel> = {
   'crm.opportunity.search': 'R1',
   'crm.opportunity.create': 'R2',
   'crm.opportunity.update': 'R2',
+  'crm.location.read': 'R1',
   'crm.pipeline.read': 'R1',
   'crm.conversation.read': 'R1',
   'crm.appointment.read': 'R1',

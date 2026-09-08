@@ -1,21 +1,21 @@
 /**
  * Live capability proof matrix (post-credential hygiene).
  *
- * Gates:
- *   1. Live GHL tenant reads (normalized via adapter / Runtime)
- *   2. Live model structured-output call (OpenRouter / Copilot env)
- *   3. Model-proposed CRM note → gateway write
- *   4. R2 approved CRM mutation (opportunity stage) — note.create is R1 ALLOW
- *   5. Exactly-once replay (same idempotency key)
- *   6. Full audit minimum
+ * Sequence:
+ *   1. Live GHL tenant reads (location → contacts → opps → pipelines →
+ *      conversations → calendars) via adapter + evidence
+ *   2. Live model structured-output call (OpenRouter)
+ *   3. Model-proposed CRM note → gateway write (R1 ALLOW — low-risk)
+ *   4. Exactly-once replay (same idempotency key)
+ *   5. R2 approved CRM mutation (opportunity stage) + restore
+ *   6. Full audit minimum → OL-001 unpause when all green
  *
- * Against production Runtime by default. Model key is NEVER logged.
+ * Against production Runtime by default. Model / GHL keys are NEVER logged.
  */
 import {
   createAgentActor,
   createHumanActor,
   capability,
-  formatServiceKey,
   newRequestId,
 } from '@aion/core';
 import { RuntimeClient } from './clients/runtime-client.js';
@@ -23,6 +23,8 @@ import { RuntimeClient } from './clients/runtime-client.js';
 const BASE_URL =
   process.env.AION_RUNTIME_URL ?? 'https://runtime.srv1655818.hstgr.cloud';
 const TENANT = process.env.GHL_ACCEPTANCE_TENANT ?? 'aion-systems';
+const LOCATION_ID =
+  process.env.GHL_LOCATION_ID ?? 'YK8RT5OnmQiMqprlyqYY';
 const CONTACT_ID =
   process.env.GHL_ACCEPTANCE_CONTACT_ID ?? 'MyWCgeFaKnifp6LM7yIc';
 const OPP_ID =
@@ -35,6 +37,7 @@ const TARGET_STAGE =
   '691415a9-30fd-4977-b1ec-fdc4efbd85fc';
 
 const PERMS = [
+  'crm.location.read',
   'crm.contact.read',
   'crm.contact.search',
   'crm.opportunity.read',
@@ -107,7 +110,7 @@ function evidenceFromCommand(
           : 0;
   return {
     tenant: TENANT,
-    location_id: process.env.GHL_LOCATION_ID ?? 'YK8RT5OnmQiMqprlyqYY',
+    location_id: LOCATION_ID,
     capability: capabilityName,
     request_id: res.run?.runId,
     execution_id: res.execution?.executionId,
@@ -138,6 +141,54 @@ async function submit(
   })) as CommandResponse;
 }
 
+/** Direct LeadConnector location GET when Runtime catalog lacks crm.location.read. */
+async function directLocationRead(): Promise<Evidence | null> {
+  const apiKey = process.env.GHL_API_KEY?.trim();
+  if (!apiKey) return null;
+  const version = process.env.GHL_API_VERSION?.trim() || '2021-07-28';
+  const started_at = new Date().toISOString();
+  const resp = await fetch(
+    `https://services.leadconnectorhq.com/locations/${encodeURIComponent(LOCATION_ID)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Version: version,
+        Accept: 'application/json',
+      },
+    },
+  );
+  const completed_at = new Date().toISOString();
+  if (!resp.ok) {
+    return {
+      tenant: TENANT,
+      location_id: LOCATION_ID,
+      capability: 'ghl.location.get',
+      provider: 'ghl',
+      http_status: resp.status,
+      started_at,
+      completed_at,
+      success: false,
+      source: 'direct',
+    };
+  }
+  const data = (await resp.json()) as { location?: { id?: string; name?: string } };
+  const loc = data.location ?? {};
+  return {
+    tenant: TENANT,
+    location_id: LOCATION_ID,
+    capability: 'ghl.location.get',
+    provider: 'ghl',
+    http_status: 200,
+    records_returned: 1,
+    name: loc.name,
+    provider_location_id: loc.id ?? LOCATION_ID,
+    started_at,
+    completed_at,
+    success: true,
+    source: 'direct',
+  };
+}
+
 async function modelStructuredCall(): Promise<Evidence> {
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   const model =
@@ -149,7 +200,7 @@ async function modelStructuredCall(): Promise<Evidence> {
       success: false,
       blocked: true,
       reason:
-        'OPENROUTER_API_KEY unset in this environment; Revenue Copilot profile not reachable. Install model key on host (copilot/.env) — never paste into chat.',
+        'OPENROUTER_API_KEY unset in this environment; Revenue Copilot profile not reachable. Install model key as agent secret or on host (never paste into chat).',
       provider: null,
       model: null,
     };
@@ -241,54 +292,146 @@ async function main(): Promise<void> {
   const report: Record<string, unknown> = {
     runtime_url: BASE_URL,
     tenant: TENANT,
+    location_id: LOCATION_ID,
     started_at: new Date().toISOString(),
     gates: {} as Record<string, unknown>,
   };
 
-  // ── 1. Live GHL reads ───────────────────────────────────────────────────
+  // ── 1. Live GHL reads (location first) ──────────────────────────────────
   const readEvidence: Evidence[] = [];
-  const reads: Array<[string, string, Record<string, unknown>]> = [
-    ['G1a', 'crm.contact.search@1', { query: 'annfiera' }],
-    ['G1b', 'crm.contact.read@1', { contactId: CONTACT_ID }],
-    ['G1c', 'crm.opportunity.search@1', {}],
-    ['G1d', 'crm.opportunity.read@1', { opportunityId: OPP_ID }],
-    ['G1e', 'crm.pipeline.read@1', {}],
-    ['G1f', 'crm.conversation.read@1', { contactId: CONTACT_ID }],
-    ['G1g', 'crm.appointment.read@1', { contactId: CONTACT_ID }],
+
+  // Location: prefer governed crm.location.read; fall back to direct GET.
+  {
+    const started_at = new Date().toISOString();
+    let locHandled = false;
+    try {
+      const locRes = await submit(
+        client,
+        agent,
+        'live-cap-G0-location',
+        'crm.location.read@1',
+        { locationId: LOCATION_ID },
+      );
+      if (succeeded(locRes) && out(locRes)['backend'] === 'ghl-live') {
+        const ev = evidenceFromCommand('crm.location.read@1', locRes, {
+          started_at,
+          pass: 'G0',
+          http_status: 200,
+        });
+        readEvidence.push(ev);
+        ok(
+          'G0',
+          `crm.location.read@1 name=${String((out(locRes)['body'] as Evidence)?.['name'] ?? '')} backend=ghl-live`,
+        );
+        locHandled = true;
+      }
+    } catch (err) {
+      // Prod catalog may not have crm.location.read@1 until this lands + redeploy.
+      skip(
+        'G0',
+        `crm.location.read@1 unavailable on Runtime (${err instanceof Error ? err.message : 'error'}) — trying direct GET`,
+      );
+    }
+    if (!locHandled) {
+      const direct = await directLocationRead();
+      if (direct?.['success']) {
+        readEvidence.push({ ...direct, pass: 'G0' });
+        ok(
+          'G0',
+          `GET /locations/${LOCATION_ID} → 200 name=${String(direct['name'] ?? '')} (direct; catalog location.read pending deploy)`,
+        );
+      } else {
+        skip(
+          'G0',
+          `location GET deferred — GHL_API_KEY unset in proof env; location_id=${LOCATION_ID} still bound on all subsequent reads`,
+        );
+        readEvidence.push({
+          tenant: TENANT,
+          location_id: LOCATION_ID,
+          capability: 'crm.location.read@1',
+          provider: 'ghl',
+          success: false,
+          deferred: true,
+          reason: 'capability_or_direct_key_missing',
+          pass: 'G0',
+        });
+      }
+    }
+  }
+
+  const reads: Array<[string, string, Record<string, unknown>, string]> = [
+    ['G1a', 'crm.contact.search@1', { query: 'annfiera' }, 'GET contacts'],
+    ['G1b', 'crm.contact.read@1', { contactId: CONTACT_ID }, 'GET contact'],
+    ['G1c', 'crm.opportunity.search@1', {}, 'GET opportunities'],
+    ['G1d', 'crm.opportunity.read@1', { opportunityId: OPP_ID }, 'GET opportunity'],
+    ['G1e', 'crm.pipeline.read@1', {}, 'GET pipelines'],
+    ['G1f', 'crm.conversation.read@1', { contactId: CONTACT_ID }, 'GET conversations'],
+    [
+      'G1g',
+      'crm.appointment.read@1',
+      { contactId: CONTACT_ID },
+      'GET calendars/events (via appointment.read)',
+    ],
   ];
-  for (const [pass, key, payload] of reads) {
+  for (const [pass, key, payload, label] of reads) {
     const started_at = new Date().toISOString();
     const res = await submit(client, agent, `live-cap-${pass}`, key, payload);
     if (!succeeded(res) || out(res)['backend'] !== 'ghl-live') {
-      fail(pass, `${key} failed: ${JSON.stringify(res).slice(0, 500)}`);
+      fail(pass, `${label} / ${key} failed: ${JSON.stringify(res).slice(0, 500)}`);
     }
-    const ev = evidenceFromCommand(key, res, { started_at, pass });
+    const ev = evidenceFromCommand(key, res, { started_at, pass, label });
     readEvidence.push(ev);
-    ok(pass, `${key} records=${ev['records_returned']} backend=ghl-live`);
+    ok(pass, `${label} ${key} records=${ev['records_returned']} backend=ghl-live`);
   }
+
+  const locationOk = readEvidence.some(
+    (e) =>
+      e['pass'] === 'G0' &&
+      e['success'] === true,
+  );
+  const tenantReadsOk = reads.every((_, i) => readEvidence[i + 1]?.['success'] === true);
   (report['gates'] as Record<string, unknown>)['live_ghl_tenant_read'] = {
-    success: true,
+    success: tenantReadsOk,
+    location_get_200: locationOk,
     evidence: readEvidence,
   };
+  if (!tenantReadsOk) fail('G1', 'tenant reads incomplete');
 
-  // ── 2. Live model call ──────────────────────────────────────────────────
+  // ── 2. Live model call (required before governed write) ─────────────────
   const modelEv = await modelStructuredCall();
   (report['gates'] as Record<string, unknown>)['live_model_call'] = modelEv;
   if (modelEv['success']) {
     ok(
       'M1',
-      `model ${String(modelEv['model'])} decision=${JSON.stringify((modelEv['output'] as Evidence)?.['decision'])} latency_ms=${String(modelEv['latency_ms'])}`,
+      `model ${String(modelEv['model'])} decision=${JSON.stringify((modelEv['output'] as Evidence)?.['decision'])} latency_ms=${String(modelEv['latency_ms'])} tokens_in=${String(modelEv['input_tokens'])} tokens_out=${String(modelEv['output_tokens'])}`,
     );
   } else {
     skip('M1', String(modelEv['reason'] ?? modelEv['error'] ?? 'model unavailable'));
+    report['ol001'] = {
+      pause_condition_cleared: false,
+      live_ghl_verified: tenantReadsOk,
+      live_model_verified: false,
+      governed_write_verified: false,
+      exactly_once_verified: false,
+      r2_approval_verified: false,
+      status: 'STILL_PAUSED',
+      blocker: 'live_model_access',
+      note: 'GHL reads green; stop before write until model gate passes (sequence)',
+    };
+    report['finished_at'] = new Date().toISOString();
+    console.log('[REPORT]');
+    console.log(JSON.stringify(report, null, 2));
+    console.log(
+      '[RESULT] capability proof stopped after GHL reads — OL-001 remains PAUSED until live model access',
+    );
+    process.exit(2);
   }
 
-  const noteBody =
-    modelEv['success'] && modelEv['output']
-      ? `AION live-capability note — model=${String((modelEv['output'] as Evidence)['decision'])} conf=${String((modelEv['output'] as Evidence)['confidence'])} @ ${new Date().toISOString()}`
-      : `AION live-capability note — model_pending @ ${new Date().toISOString()}`;
+  const noteBody = `AION live-capability note — model=${String((modelEv['output'] as Evidence)['decision'])} conf=${String((modelEv['output'] as Evidence)['confidence'])} @ ${new Date().toISOString()}`;
 
-  // ── 3–5. Proposed note write + exactly-once replay (R1 ALLOW) ───────────
+  // ── 3–4. Proposed note write + exactly-once replay (R1 ALLOW) ───────────
+  // Low-risk first write. R2 approval is proven via opportunity.update below
+  // (crm.note.create remains R1 by catalog — elevating would break M009).
   const idemNote = `ghl-live-note-${CONTACT_ID}-${Date.now()}`;
   const note1 = await submit(client, agent, 'live-cap-note', 'crm.note.create@1', {
     contactId: CONTACT_ID,
@@ -323,7 +466,7 @@ async function main(): Promise<void> {
   (report['gates'] as Record<string, unknown>)['proposed_crm_mutation_note'] = {
     success: true,
     note_body: noteBody,
-    model_backed: Boolean(modelEv['success']),
+    model_backed: true,
   };
   (report['gates'] as Record<string, unknown>)['one_real_ghl_write_note'] = {
     success: true,
@@ -345,8 +488,7 @@ async function main(): Promise<void> {
     idempotentReplay: true,
   };
 
-  // ── 4. R2 approval path (opportunity stage) — required by acceptance matrix
-  //     crm.note.create is R1 ALLOW; R2 proof uses crm.opportunity.update.
+  // ── 5. R2 approval path (opportunity stage) ─────────────────────────────
   const propose = await submit(
     client,
     agent,
@@ -371,7 +513,7 @@ async function main(): Promise<void> {
     approve: true,
     decidedBy: human.actorId,
     actor: human,
-    note: 'Live capability — R2 stage update after note write (will restore)',
+    note: 'Live capability — R2 stage update after model-backed note (will restore)',
   })) as CommandResponse;
   if (!succeeded(decided) && decided.status !== 'succeeded') {
     fail('R2b', `approve failed: ${JSON.stringify(decided).slice(0, 500)}`);
@@ -383,7 +525,6 @@ async function main(): Promise<void> {
   if (!stageSide) fail('R2b', 'missing stage sideEffectId');
   ok('R2b', `human approved + executed sideEffectId=${stageSide}`);
 
-  // restore
   const restorePropose = await submit(
     client,
     agent,
@@ -420,7 +561,7 @@ async function main(): Promise<void> {
   };
   (report['gates'] as Record<string, unknown>)['provider_response_captured'] = {
     success: true,
-    note: stageOut['externalRequestId'] ? true : Boolean(out(note1)['externalRequestId']),
+    note: Boolean(out(note1)['externalRequestId']),
     stage_externalRequestId: stageOut['externalRequestId'],
     note_externalRequestId: out(note1)['externalRequestId'],
   };
@@ -438,35 +579,20 @@ async function main(): Promise<void> {
     },
   };
 
-  // ── OL-001 pause condition ──────────────────────────────────────────────
-  const ghlOk = true;
-  const modelOk = Boolean(modelEv['success']);
-  const writeOk = true;
-  const replayOk = true;
-  const r2Ok = true;
-  const canUnpause = ghlOk && modelOk && writeOk && replayOk && r2Ok;
   report['ol001'] = {
-    pause_condition_cleared: canUnpause,
-    live_ghl_verified: ghlOk,
-    live_model_verified: modelOk,
-    governed_write_verified: writeOk,
-    exactly_once_verified: replayOk,
-    r2_approval_verified: r2Ok,
-    status: canUnpause ? 'UNPAUSED_READY' : 'STILL_PAUSED',
-    blocker: canUnpause
-      ? null
-      : !modelOk
-        ? 'live_model_access'
-        : 'unknown',
+    pause_condition_cleared: true,
+    live_ghl_verified: true,
+    live_model_verified: true,
+    governed_write_verified: true,
+    exactly_once_verified: true,
+    r2_approval_verified: true,
+    status: 'UNPAUSED_READY',
+    blocker: null,
   };
   report['finished_at'] = new Date().toISOString();
 
   console.log('[REPORT]');
   console.log(JSON.stringify(report, null, 2));
-  if (!canUnpause) {
-    console.log('[RESULT] capability proof partial — OL-001 remains PAUSED until live model access');
-    process.exit(2);
-  }
   console.log('[PASS] live capability proof green — OL-001 pause condition cleared');
 }
 
