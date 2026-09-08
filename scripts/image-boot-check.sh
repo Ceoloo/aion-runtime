@@ -46,11 +46,17 @@ echo "[boot-check] 1/4 disposable postgres:16"
 docker run -d --name "$PG" --network "$NET" \
   -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=aion_data \
   postgres:16-alpine >/dev/null
-for _ in $(seq 1 30); do
-  docker exec "$PG" pg_isready -U postgres -d aion_data >/dev/null 2>&1 && break
+# `pg_isready` answers TRUE against the entrypoint's transient init-time server
+# too — before POSTGRES_DB is created and before the real restart. Gate on an
+# actual SELECT against the target DB so we never race that window.
+pg_ok=""
+for _ in $(seq 1 60); do
+  if docker exec "$PG" psql -U postgres -d aion_data -tAc 'SELECT 1' >/dev/null 2>&1; then
+    pg_ok=1; break
+  fi
   sleep 1
 done
-docker exec "$PG" pg_isready -U postgres -d aion_data >/dev/null 2>&1 || fail "postgres never became ready"
+[ -n "$pg_ok" ] || { docker logs "$PG" 2>&1 | tail -30 >&2; fail "postgres never became ready"; }
 
 # Two-role least-privilege model (same as providers/vps/system/init-roles.sh).
 docker exec -i "$PG" psql -v ON_ERROR_STOP=1 -U postgres -d aion_data >/dev/null <<SQL
