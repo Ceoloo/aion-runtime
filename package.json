@@ -28,6 +28,7 @@
     "proof:mission008": "bash scripts/mission008-proof-matrix.sh",
     "proof:mission009": "bash scripts/mission009-proof-matrix.sh",
     "proof:ghl-phase-ab": "bash scripts/ghl-phase-ab-proof-matrix.sh",
+    "proof:ghl-live-acceptance": "bash scripts/ghl-live-acceptance.sh",
     "proof:ie002": "bash scripts/ie002-proof-matrix.sh"
   },
   "dependencies": {

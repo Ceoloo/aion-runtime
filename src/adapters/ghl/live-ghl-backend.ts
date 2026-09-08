@@ -275,13 +275,46 @@ export class LiveGhlBackend implements GhlBackend {
         const end =
           str(payload['endAt']) ??
           new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+        // LeadConnector /calendars/events requires userId|calendarId|groupId.
+        // When the location has no calendars, treat as an empty read (not a hard fail).
+        let calendarId = str(payload['calendarId']);
+        if (!calendarId) {
+          const calList = await this.api(
+            connection,
+            'GET',
+            `/calendars/?locationId=${encodeURIComponent(connection.locationId)}`,
+          );
+          if (calList.ok) {
+            const calendars = Array.isArray(asRecord(calList.body)['calendars'])
+              ? (asRecord(calList.body)['calendars'] as unknown[])
+              : [];
+            if (calendars.length === 0) {
+              return ok('appointment_list', calList.externalRequestId, {
+                items: [],
+                count: 0,
+              });
+            }
+            const first = asRecord(calendars[0]);
+            calendarId = str(first['id']);
+          }
+        }
         const qs = new URLSearchParams({
           locationId: connection.locationId,
           startTime: start,
           endTime: end,
         });
+        if (calendarId) qs.set('calendarId', calendarId);
         const data = await this.api(connection, 'GET', `/calendars/events?${qs}`);
-        if (!data.ok) return data;
+        if (!data.ok) {
+          // Empty / unscoped calendar tenants: return empty list instead of 422.
+          if (data.errorCode === 'GHL_HTTP_422') {
+            return ok('appointment_list', `ghl_req_${randomUUID()}`, {
+              items: [],
+              count: 0,
+            });
+          }
+          return data;
+        }
         const rawItems = Array.isArray(asRecord(data.body)['events'])
           ? (asRecord(data.body)['events'] as unknown[])
           : Array.isArray(asRecord(data.body)['appointments'])
