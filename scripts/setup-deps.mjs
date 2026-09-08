@@ -22,8 +22,10 @@ const CORE_REPO = process.env.AION_CORE_REPO ?? 'https://github.com/Ceoloo/aion-
 const DATA_REPO = process.env.AION_DATA_REPO ?? 'https://github.com/Ceoloo/aion-data';
 // aion-core tip after GHL Phase A catalog (#17 on execution-object base).
 const CORE_REF = process.env.AION_CORE_REF ?? '791b40c81f39edf93a87e639d90941aeaabaa903';
-// aion-data tip after Mission 008 branch (autonomy_grants). Re-pin after data lands.
-const DATA_REF = process.env.AION_DATA_REF ?? 'de16c2f0eb5b2df6943b03cfeb6c990b69e3bf36';
+// aion-data pinned to @aion/core 791b40c8 in lockstep with CORE_REF above, so
+// seedMission009() seeds all 15 M009 CRM capabilities (was 10). Re-pin to the
+// squash-merge SHA once aion-data lands. (aion-data#18)
+const DATA_REF = process.env.AION_DATA_REF ?? '09737674fc303d197fc3f20c096a0731bd1641ea';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const vendor = resolve(root, 'vendor');
