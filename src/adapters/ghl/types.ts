@@ -6,6 +6,7 @@
  */
 
 export type GhlMutationKind =
+  | 'location.read'
   | 'contact.read'
   | 'contact.search'
   | 'contact.enrich'

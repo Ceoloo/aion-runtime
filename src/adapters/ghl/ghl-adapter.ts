@@ -17,6 +17,7 @@ import { isGhlReadAction } from './types.js';
 import { sharedFakeGhlBackend } from './fake-ghl-backend.js';
 
 const CRM_ACTIONS: Record<string, GhlMutationKind> = {
+  'crm.location.read': 'location.read',
   'crm.contact.read': 'contact.read',
   'crm.contact.search': 'contact.search',
   'crm.contact.enrich': 'contact.enrich',
@@ -37,6 +38,7 @@ const CRM_ACTIONS: Record<string, GhlMutationKind> = {
 };
 
 export const MISSION_009_CAPABILITIES: Capability[] = [
+  capability('crm.location.read'),
   capability('crm.contact.read'),
   capability('crm.contact.search'),
   capability('crm.contact.enrich'),
