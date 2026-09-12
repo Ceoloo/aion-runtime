@@ -79,6 +79,7 @@ echo "[boot-check] 3/4 start the long-running host"
 docker run -d --name "$RT" --network "$NET" \
   -e DATABASE_URL="$APP_URL" \
   -e AION_ENVIRONMENT=production -e DATABASE_SSL=false \
+  -e AION_AUTH_MODE=open \
   -e PORT=8080 -e GIT_SHA="${EXPECTED_SHA:-unknown}" \
   "$IMAGE" >/dev/null
 
