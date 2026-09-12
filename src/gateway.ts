@@ -13,6 +13,8 @@
  *   POST /v1/missions/run                 — Mission 004 multi-step orchestration
  *   GET  /v1/missions                     — Mission 006 tenant mission list
  *   GET  /v1/missions/:missionId          — Mission 006 mission detail (tenant-gated)
+ *   PATCH /v1/missions/:missionId         — close / update mission status + metadata
+ *                                         (OL-001 terminal outcomes / visible waivers)
  *   GET  /v1/missions/:missionId/economics — Mission 005 economics rollup
  *   GET  /v1/economics                    — Mission 005 scope/holding rollup
  *   GET  /v1/runs/:runId                  — fetch run state
@@ -62,6 +64,7 @@ import {
   ExecutionId,
   Mission,
   MissionId,
+  MissionStatus,
   RoutingOverride,
   ServiceKey,
   Workflow,
@@ -169,6 +172,14 @@ export async function handleGatewayRequest(
     const missionMatch = /^\/v1\/missions\/([^/]+)$/.exec(path);
     if (method === 'GET' && missionMatch) {
       return await getMission(decodeURIComponent(missionMatch[1]!), cp, req);
+    }
+    if (method === 'PATCH' && missionMatch) {
+      return await patchMission(
+        decodeURIComponent(missionMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+      );
     }
 
     if (method === 'GET' && path === '/v1/services') {
@@ -1050,6 +1061,108 @@ async function getMission(
     );
   }
   return { status: 200, body: { mission } };
+}
+
+/**
+ * OL-001 — update mission status and/or merge metadata (terminal outcomes).
+ *
+ * Used to close production missions with an explicit, visible outcome — including
+ * `completed_with_exception` recorded under `metadata.terminalOutcome` while
+ * Core `Mission.status` stays within the existing enum (`completed`).
+ * Waivers must not be silent: callers put step-level PASS/WAIVED evidence in
+ * `metadata.terminalOutcome`.
+ */
+async function patchMission(
+  missionIdRaw: string,
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required to patch missions',
+    );
+  }
+  const parsedId = MissionId.safeParse(missionIdRaw);
+  if (!parsedId.success) {
+    return jsonError(400, 'invalid_mission_id', 'missionId must be a Core MissionId');
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'PATCH body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  if (raw.status === undefined && raw.metadata === undefined) {
+    return jsonError(
+      400,
+      'invalid_body',
+      'PATCH requires status and/or metadata',
+    );
+  }
+
+  const existing = await cp.dataLayer.missions.get(parsedId.data);
+  if (!existing) {
+    return jsonError(404, 'mission_not_found', `mission ${missionIdRaw} not found`);
+  }
+  const tenantMissions = await cp.dataLayer.missions.listForTenant(callerTenant);
+  if (!tenantMissions.some((m) => m.missionId === existing.missionId)) {
+    return jsonError(
+      403,
+      'tenant_isolation_denied',
+      `caller tenant ${callerTenant} cannot patch mission ${missionIdRaw}`,
+    );
+  }
+
+  let nextStatus = existing.status;
+  if (raw.status !== undefined) {
+    const statusParsed = MissionStatus.safeParse(raw.status);
+    if (!statusParsed.success) {
+      return jsonError(
+        400,
+        'invalid_status',
+        'status must be a Core MissionStatus (draft|active|paused|completed|cancelled)',
+      );
+    }
+    nextStatus = statusParsed.data;
+  }
+
+  let nextMetadata: Record<string, unknown> = { ...existing.metadata };
+  if (raw.metadata !== undefined) {
+    if (!raw.metadata || typeof raw.metadata !== 'object' || Array.isArray(raw.metadata)) {
+      return jsonError(400, 'invalid_metadata', 'metadata must be a JSON object');
+    }
+    nextMetadata = {
+      ...nextMetadata,
+      ...(raw.metadata as Record<string, unknown>),
+    };
+  }
+
+  // Honest OL close: if terminalOutcome declares completed_with_exception,
+  // force Core status to completed so the mission leaves "active" without a
+  // silent drop. Display layers read terminalOutcome.status for the badge.
+  const terminal = nextMetadata.terminalOutcome;
+  if (
+    terminal &&
+    typeof terminal === 'object' &&
+    !Array.isArray(terminal) &&
+    (terminal as Record<string, unknown>).status === 'completed_with_exception'
+  ) {
+    nextStatus = 'completed';
+    nextMetadata = {
+      ...nextMetadata,
+      outcomeStatus: 'completed_with_exception',
+    };
+  }
+
+  const updated = Mission.parse({
+    ...existing,
+    status: nextStatus,
+    metadata: nextMetadata,
+  });
+  await cp.dataLayer.missions.save(updated);
+  return { status: 200, body: { mission: updated } };
 }
 
 /**
