@@ -189,7 +189,10 @@ export class LiveGhlBackend implements GhlBackend {
           contactId: str(payload['contactId']),
           name: str(payload['name']) ?? 'Untitled opportunity',
           pipelineId: str(payload['pipelineId']),
-          pipelineStageId: str(payload['stage']),
+          pipelineStageId:
+            str(payload['stage']) ??
+            str(payload['stageId']) ??
+            str(payload['pipelineStageId']),
           status: str(payload['status']) ?? 'open',
           monetaryValue: typeof payload['value'] === 'number' ? payload['value'] : undefined,
         };
@@ -205,7 +208,12 @@ export class LiveGhlBackend implements GhlBackend {
         if (!id) return fail('GHL_BAD_REQUEST', 'opportunityId required');
         const body: Record<string, unknown> = {};
         if (str(payload['name'])) body['name'] = str(payload['name']);
-        if (str(payload['stage'])) body['pipelineStageId'] = str(payload['stage']);
+        const stage =
+          str(payload['stage']) ??
+          str(payload['stageId']) ??
+          str(payload['pipelineStageId']);
+        if (stage) body['pipelineStageId'] = stage;
+        if (str(payload['pipelineId'])) body['pipelineId'] = str(payload['pipelineId']);
         if (str(payload['status'])) body['status'] = str(payload['status']);
         if (typeof payload['value'] === 'number') body['monetaryValue'] = payload['value'];
         const data = await this.api(
@@ -357,6 +365,10 @@ export class LiveGhlBackend implements GhlBackend {
       case 'task.create': {
         const contactId = str(payload['contactId']);
         if (!contactId) return fail('GHL_BAD_REQUEST', 'contactId required');
+        // GHL contact tasks require dueDate; default to +24h when omitted.
+        const dueDate =
+          str(payload['dueDate']) ??
+          new Date(Date.now() + 24 * 3600 * 1000).toISOString();
         const data = await this.api(
           connection,
           'POST',
@@ -364,6 +376,7 @@ export class LiveGhlBackend implements GhlBackend {
           {
             title: str(payload['title']) ?? 'Follow up',
             body: str(payload['body']),
+            dueDate,
           },
         );
         if (!data.ok) return data;
@@ -373,6 +386,7 @@ export class LiveGhlBackend implements GhlBackend {
           id,
           contactId,
           title: str(payload['title']) ?? 'Follow up',
+          dueDate,
         });
       }
       case 'message.draft': {
@@ -430,11 +444,20 @@ export class LiveGhlBackend implements GhlBackend {
     const externalRequestId =
       resp.headers.get('x-request-id') ?? `ghl_req_${randomUUID()}`;
     if (!resp.ok) {
-      // Never echo Authorization or key material.
+      // Never echo Authorization or key material; include a short body hint for 4xx diagnosis.
+      let detail = '';
+      try {
+        const text = await resp.text();
+        detail = text.replace(/\s+/g, ' ').trim().slice(0, 240);
+      } catch {
+        detail = '';
+      }
       return {
         ok: false,
         errorCode: `GHL_HTTP_${resp.status}`,
-        errorMessage: `ghl_http_error status=${resp.status}`,
+        errorMessage: detail
+          ? `ghl_http_error status=${resp.status} body=${detail}`
+          : `ghl_http_error status=${resp.status}`,
         retryable: resp.status === 429 || resp.status >= 500,
       };
     }
