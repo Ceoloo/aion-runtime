@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 const CORE_REPO = process.env.AION_CORE_REPO ?? 'https://github.com/Ceoloo/aion-core';
 const DATA_REPO = process.env.AION_DATA_REPO ?? 'https://github.com/Ceoloo/aion-data';
 // aion-core tip after GHL Phase A catalog (#17 on execution-object base).
-const CORE_REF = process.env.AION_CORE_REF ?? '791b40c81f39edf93a87e639d90941aeaabaa903';
+const CORE_REF = process.env.AION_CORE_REF ?? '7c84416495107ce19ff99c8e3fce4853331ccf52';
 // aion-data pinned to @aion/core 791b40c8 in lockstep with CORE_REF above, so
 // seedMission009() seeds all 15 M009 CRM capabilities (was 10). aion-data#18,
 // landed on cursor/execution-object-agent-identity-6743.
