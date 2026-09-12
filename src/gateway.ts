@@ -50,6 +50,14 @@
  *   POST /v1/implementations/:caseId/provisioning/steps/:key/probe — IE-002 readiness probe
  *   POST /v1/implementations/:caseId/activation/ready — IE-002 mark activation_ready
  *   POST /v1/implementations/:caseId/activate — IE-002 human activate → active
+ *   POST /v1/outcomes                     — create durable business outcome
+ *   GET  /v1/outcomes/:outcomeId          — fetch outcome
+ *   GET  /v1/outcomes?runId=|missionId=   — list outcomes by run or mission
+ *   PATCH /v1/outcomes/:outcomeId         — update outcome as reality resolves
+ *   POST /v1/revenue-sessions             — create opaque revenue session
+ *   GET  /v1/revenue-sessions/:sessionId  — fetch revenue session
+ *   PUT  /v1/revenue-sessions/:sessionId  — checkpoint / finalize (revision)
+ *   GET  /v1/revenue-sessions?status=     — list active ids or finalized records
  */
 import type { IncomingMessage } from 'node:http';
 import {
@@ -65,7 +73,10 @@ import {
   Mission,
   MissionId,
   MissionStatus,
+  OutcomeId,
+  OutcomeStatus,
   RoutingOverride,
+  RunId,
   ServiceKey,
   Workflow,
   createEvaluationResult,
@@ -107,7 +118,7 @@ import {
   type RiskLevel,
   type Run,
 } from '@aion/core';
-import { toOutcomeReference } from '@aion/data';
+import { isDataError, toOutcomeReference } from '@aion/data';
 import type { ControlPlane } from './control-plane.js';
 import type { Logger } from './logger.js';
 
@@ -242,6 +253,42 @@ export async function handleGatewayRequest(
 
     if (method === 'GET' && path === '/v1/executions') {
       return await listRecentExecutions(url, cp, req);
+    }
+
+    if (method === 'POST' && path === '/v1/outcomes') {
+      return await createOutcome(await readJsonBody(req), cp);
+    }
+    if (method === 'GET' && path === '/v1/outcomes') {
+      return await listOutcomes(url, cp);
+    }
+    const outcomeMatch = /^\/v1\/outcomes\/([^/]+)$/.exec(path);
+    if (method === 'GET' && outcomeMatch) {
+      return await getOutcome(decodeURIComponent(outcomeMatch[1]!), cp);
+    }
+    if (method === 'PATCH' && outcomeMatch) {
+      return await patchOutcome(
+        decodeURIComponent(outcomeMatch[1]!),
+        await readJsonBody(req),
+        cp,
+      );
+    }
+
+    if (method === 'POST' && path === '/v1/revenue-sessions') {
+      return await createRevenueSession(await readJsonBody(req), cp);
+    }
+    if (method === 'GET' && path === '/v1/revenue-sessions') {
+      return await listRevenueSessions(url, cp);
+    }
+    const revenueSessionMatch = /^\/v1\/revenue-sessions\/([^/]+)$/.exec(path);
+    if (method === 'GET' && revenueSessionMatch) {
+      return await getRevenueSession(decodeURIComponent(revenueSessionMatch[1]!), cp);
+    }
+    if (method === 'PUT' && revenueSessionMatch) {
+      return await putRevenueSession(
+        decodeURIComponent(revenueSessionMatch[1]!),
+        await readJsonBody(req),
+        cp,
+      );
     }
 
     if (method === 'POST' && path === '/v1/evaluations') {
@@ -428,6 +475,22 @@ export async function handleGatewayRequest(
                 ? 400
                 : 500;
       logger.error('gateway_domain_error', {
+        operation: `${method} ${path}`,
+        code: err.code,
+        error: err.message,
+      });
+      return jsonError(status, err.code.toLowerCase(), err.message);
+    }
+    if (isDataError(err)) {
+      const status =
+        err.code === 'NOT_FOUND'
+          ? 404
+          : err.code === 'CONCURRENCY'
+            ? 409
+            : err.code === 'MAPPING'
+              ? 400
+              : 500;
+      logger.error('gateway_data_error', {
         operation: `${method} ${path}`,
         code: err.code,
         error: err.message,
@@ -2815,4 +2878,290 @@ async function activateImplementationCase(
       err instanceof Error ? err.message : 'activation rejected',
     );
   }
+}
+
+// ── Durable outcomes + revenue sessions (ADR-003 host surface) ──────────────
+
+/**
+ * Create a durable business outcome via Data. When an Execution Object already
+ * exists for the run and has no outcomeId, link the minted id (field already
+ * on the Execution Object contract — no schema invention).
+ */
+async function createOutcome(
+  body: unknown,
+  cp: ControlPlane,
+): Promise<GatewayResponse> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'outcome body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  const runParsed = RunId.safeParse(raw.runId);
+  if (!runParsed.success) {
+    return jsonError(400, 'invalid_run_id', 'runId must be a Core RunId');
+  }
+  let missionId: string | undefined;
+  if (raw.missionId !== undefined) {
+    const missionParsed = MissionId.safeParse(raw.missionId);
+    if (!missionParsed.success) {
+      return jsonError(400, 'invalid_mission_id', 'missionId must be a Core MissionId');
+    }
+    missionId = missionParsed.data;
+  }
+  let status: OutcomeStatus | undefined;
+  if (raw.status !== undefined) {
+    const statusParsed = OutcomeStatus.safeParse(raw.status);
+    if (!statusParsed.success) {
+      return jsonError(400, 'invalid_status', 'status must be a Core OutcomeStatus');
+    }
+    status = statusParsed.data;
+  }
+  if (raw.value !== undefined && typeof raw.value !== 'number') {
+    return jsonError(400, 'invalid_value', 'value must be a number when provided');
+  }
+  if (raw.currency !== undefined && typeof raw.currency !== 'string') {
+    return jsonError(400, 'invalid_currency', 'currency must be a string when provided');
+  }
+  if (
+    raw.metadata !== undefined &&
+    (typeof raw.metadata !== 'object' || raw.metadata === null || Array.isArray(raw.metadata))
+  ) {
+    return jsonError(400, 'invalid_metadata', 'metadata must be a JSON object when provided');
+  }
+
+  const outcome = await cp.dataLayer.outcomes.create({
+    runId: runParsed.data,
+    ...(missionId ? { missionId: missionId as never } : {}),
+    ...(status ? { status } : {}),
+    ...(typeof raw.outcomeType === 'string' ? { outcomeType: raw.outcomeType } : {}),
+    ...(typeof raw.externalReference === 'string'
+      ? { externalReference: raw.externalReference }
+      : {}),
+    ...(typeof raw.value === 'number' ? { value: raw.value } : {}),
+    ...(typeof raw.currency === 'string' ? { currency: raw.currency } : {}),
+    ...(typeof raw.measuredAt === 'string' ? { measuredAt: raw.measuredAt } : {}),
+    ...(raw.metadata && typeof raw.metadata === 'object'
+      ? { metadata: raw.metadata as Record<string, unknown> }
+      : {}),
+  });
+
+  // Optional link — only when the execution row exists and outcomeId is unset.
+  const execution = await cp.dataLayer.executions.getByRunId(outcome.runId);
+  if (execution && !execution.outcomeId) {
+    await cp.dataLayer.executions.save({
+      ...execution,
+      outcomeId: outcome.outcomeId,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  return { status: 201, body: { outcome } };
+}
+
+async function getOutcome(
+  outcomeIdRaw: string,
+  cp: ControlPlane,
+): Promise<GatewayResponse> {
+  const parsed = OutcomeId.safeParse(outcomeIdRaw);
+  if (!parsed.success) {
+    return jsonError(400, 'invalid_outcome_id', 'outcomeId must be a Core OutcomeId');
+  }
+  const outcome = await cp.dataLayer.outcomes.get(parsed.data);
+  if (!outcome) {
+    return jsonError(404, 'outcome_not_found', `outcome ${outcomeIdRaw} not found`);
+  }
+  return { status: 200, body: { outcome } };
+}
+
+async function listOutcomes(url: string, cp: ControlPlane): Promise<GatewayResponse> {
+  const params = new URL(url, 'http://localhost').searchParams;
+  const runIdRaw = params.get('runId');
+  const missionIdRaw = params.get('missionId');
+  if (runIdRaw && missionIdRaw) {
+    return jsonError(
+      400,
+      'ambiguous_query',
+      'provide exactly one of runId or missionId',
+    );
+  }
+  if (runIdRaw) {
+    const parsed = RunId.safeParse(runIdRaw);
+    if (!parsed.success) {
+      return jsonError(400, 'invalid_run_id', 'runId must be a Core RunId');
+    }
+    const outcomes = await cp.dataLayer.outcomes.listByRun(parsed.data);
+    return { status: 200, body: { outcomes, count: outcomes.length } };
+  }
+  if (missionIdRaw) {
+    const parsed = MissionId.safeParse(missionIdRaw);
+    if (!parsed.success) {
+      return jsonError(400, 'invalid_mission_id', 'missionId must be a Core MissionId');
+    }
+    const outcomes = await cp.dataLayer.outcomes.listByMission(parsed.data);
+    return { status: 200, body: { outcomes, count: outcomes.length } };
+  }
+  return jsonError(
+    400,
+    'query_required',
+    'GET /v1/outcomes requires runId or missionId',
+  );
+}
+
+async function patchOutcome(
+  outcomeIdRaw: string,
+  body: unknown,
+  cp: ControlPlane,
+): Promise<GatewayResponse> {
+  const parsed = OutcomeId.safeParse(outcomeIdRaw);
+  if (!parsed.success) {
+    return jsonError(400, 'invalid_outcome_id', 'outcomeId must be a Core OutcomeId');
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'outcome patch must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  const patch: {
+    status?: OutcomeStatus;
+    outcomeType?: string;
+    externalReference?: string;
+    value?: number;
+    currency?: string;
+    measuredAt?: string;
+    metadata?: Record<string, unknown>;
+  } = {};
+  if (raw.status !== undefined) {
+    const statusParsed = OutcomeStatus.safeParse(raw.status);
+    if (!statusParsed.success) {
+      return jsonError(400, 'invalid_status', 'status must be a Core OutcomeStatus');
+    }
+    patch.status = statusParsed.data;
+  }
+  if (typeof raw.outcomeType === 'string') patch.outcomeType = raw.outcomeType;
+  if (typeof raw.externalReference === 'string') {
+    patch.externalReference = raw.externalReference;
+  }
+  if (raw.value !== undefined) {
+    if (typeof raw.value !== 'number') {
+      return jsonError(400, 'invalid_value', 'value must be a number when provided');
+    }
+    patch.value = raw.value;
+  }
+  if (typeof raw.currency === 'string') patch.currency = raw.currency;
+  if (typeof raw.measuredAt === 'string') patch.measuredAt = raw.measuredAt;
+  if (raw.metadata !== undefined) {
+    if (typeof raw.metadata !== 'object' || raw.metadata === null || Array.isArray(raw.metadata)) {
+      return jsonError(400, 'invalid_metadata', 'metadata must be a JSON object when provided');
+    }
+    patch.metadata = raw.metadata as Record<string, unknown>;
+  }
+  if (Object.keys(patch).length === 0) {
+    return jsonError(400, 'empty_patch', 'outcome patch must include at least one field');
+  }
+  const outcome = await cp.dataLayer.outcomes.update(parsed.data, patch);
+  return { status: 200, body: { outcome } };
+}
+
+async function createRevenueSession(
+  body: unknown,
+  cp: ControlPlane,
+): Promise<GatewayResponse> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'revenue session body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  if (typeof raw.sessionId !== 'string' || !raw.sessionId.trim()) {
+    return jsonError(400, 'session_id_required', 'sessionId is required');
+  }
+  if (raw.checkpoint === undefined) {
+    return jsonError(400, 'checkpoint_required', 'checkpoint is required');
+  }
+  const sessionId = raw.sessionId.trim();
+  try {
+    await cp.dataLayer.revenueSessions.create(sessionId, raw.checkpoint);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/duplicate|unique|already exists/i.test(message)) {
+      return jsonError(409, 'session_exists', `revenue session ${sessionId} already exists`);
+    }
+    throw err;
+  }
+  const session = await cp.dataLayer.revenueSessions.get(sessionId);
+  return { status: 201, body: { session } };
+}
+
+async function getRevenueSession(
+  sessionId: string,
+  cp: ControlPlane,
+): Promise<GatewayResponse> {
+  const session = await cp.dataLayer.revenueSessions.get(sessionId);
+  if (!session) {
+    return jsonError(404, 'session_not_found', `revenue session ${sessionId} not found`);
+  }
+  return { status: 200, body: { session } };
+}
+
+async function putRevenueSession(
+  sessionId: string,
+  body: unknown,
+  cp: ControlPlane,
+): Promise<GatewayResponse> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return jsonError(400, 'invalid_body', 'revenue session body must be a JSON object');
+  }
+  const raw = body as Record<string, unknown>;
+  if (typeof raw.revision !== 'number' || !Number.isInteger(raw.revision)) {
+    return jsonError(400, 'revision_required', 'revision (integer) is required');
+  }
+  const existing = await cp.dataLayer.revenueSessions.get(sessionId);
+  if (!existing) {
+    return jsonError(404, 'session_not_found', `revenue session ${sessionId} not found`);
+  }
+  if (existing.finalRecord !== null && existing.finalRecord !== undefined) {
+    return jsonError(409, 'session_finalized', `revenue session ${sessionId} is finalized`);
+  }
+  // Schema XOR: active rows keep checkpoint; finalization clears it.
+  const finalRecord =
+    raw.finalRecord !== undefined ? raw.finalRecord : existing.finalRecord;
+  const checkpoint =
+    raw.checkpoint !== undefined
+      ? raw.checkpoint
+      : raw.finalRecord !== undefined
+        ? null
+        : existing.checkpoint;
+
+  try {
+    await cp.dataLayer.revenueSessions.save({
+      sessionId,
+      checkpoint,
+      finalRecord,
+      revision: raw.revision,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/stale or finalized/i.test(message)) {
+      return jsonError(409, 'stale_or_finalized', message);
+    }
+    throw err;
+  }
+  const session = await cp.dataLayer.revenueSessions.get(sessionId);
+  return { status: 200, body: { session } };
+}
+
+async function listRevenueSessions(
+  url: string,
+  cp: ControlPlane,
+): Promise<GatewayResponse> {
+  const status = new URL(url, 'http://localhost').searchParams.get('status');
+  if (status === 'active') {
+    const sessionIds = await cp.dataLayer.revenueSessions.listActive();
+    return { status: 200, body: { sessionIds, count: sessionIds.length } };
+  }
+  if (status === 'finalized') {
+    const records = await cp.dataLayer.revenueSessions.listFinalized();
+    return { status: 200, body: { records, count: records.length } };
+  }
+  return jsonError(
+    400,
+    'invalid_status',
+    'GET /v1/revenue-sessions requires status=active|finalized',
+  );
 }

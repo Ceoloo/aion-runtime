@@ -30,7 +30,8 @@
     "proof:ghl-phase-ab": "bash scripts/ghl-phase-ab-proof-matrix.sh",
     "proof:ghl-live-acceptance": "bash scripts/ghl-live-acceptance.sh",
     "proof:ghl-live-capability": "node dist/ghl-live-capability-proof.js",
-    "proof:ie002": "bash scripts/ie002-proof-matrix.sh"
+    "proof:ie002": "bash scripts/ie002-proof-matrix.sh",
+    "test:outcomes-sessions": "npm run build && node --test dist/outcomes-sessions-gateway.test.js"
   },
   "dependencies": {
     "@aion/core": "file:vendor/aion-core",

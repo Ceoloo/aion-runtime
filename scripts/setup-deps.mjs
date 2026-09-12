@@ -25,6 +25,8 @@ const CORE_REF = process.env.AION_CORE_REF ?? '5ee259552054b11a2165cd0e30c9f8877
 // aion-data pinned in lockstep with CORE_REF (execution-object base + opportunity entity routing), so
 // seedMission009() seeds all 15 M009 CRM capabilities (was 10). aion-data#18,
 // landed on cursor/execution-object-agent-identity-6743.
+// revenue_sessions (aion-data#19 on main) is overlaid as migration 0011 via
+// scripts/vendor-revenue-sessions.mjs until EO tip absorbs it.
 const DATA_REF = process.env.AION_DATA_REF ?? '60ff3d2459a5c2fff7dcd9b0592af713306716eb';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -59,6 +61,8 @@ function main() {
     rmSync(dataDir, { recursive: true, force: true });
     run(`git clone --quiet ${DATA_REPO} "${dataDir}"`, vendor);
     run(`git checkout --quiet ${DATA_REF}`, dataDir);
+    // Bridge revenue_sessions (aion-data#19 on main) onto EO pin as 0011.
+    run(`node "${resolve(root, 'scripts/vendor-revenue-sessions.mjs')}"`, root);
     // Reuse the already-built core so data links the same contract build.
     mkdirSync(resolve(dataDir, 'vendor'), { recursive: true });
     cpSync(coreDir, resolve(dataDir, 'vendor', 'aion-core'), { recursive: true });
