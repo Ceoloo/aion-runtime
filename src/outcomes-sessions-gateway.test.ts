@@ -164,6 +164,8 @@ function buildMockControlPlane(): {
         },
       },
     },
+    // Open mode: these proofs cover outcomes/sessions, not authn.
+    auth: { mode: 'open' as const, apiKeys: [] },
   } as unknown as ControlPlane;
 
   return { cp, executions };
