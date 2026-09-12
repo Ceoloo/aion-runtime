@@ -95,6 +95,7 @@ source "${ANCHORS}.vars"
 set +a
 : "${PROOF_D_RUN_ID:?missing PROOF_D_RUN_ID}"
 : "${PROOF_D_APPROVAL_ID:?missing PROOF_D_APPROVAL_ID}"
+: "${PROOF_D_EXECUTION_ID:?missing PROOF_D_EXECUTION_ID}"
 
 echo "[proof] kill Runtime #1 (simulate process restart)"
 stop_runtime "$RT_PID"
@@ -111,7 +112,8 @@ PROOF_MODE=d-resume \
   PROOF_D_REQUEST_ID="${PROOF_D_REQUEST_ID:-}" \
   PROOF_D_RUN_ID="$PROOF_D_RUN_ID" \
   PROOF_D_APPROVAL_ID="$PROOF_D_APPROVAL_ID" \
+  PROOF_D_EXECUTION_ID="$PROOF_D_EXECUTION_ID" \
   AION_RUNTIME_URL="$AION_RUNTIME_URL" \
   node dist/mission001-proof-matrix.js
 
-echo "[proof] PASS — Mission 001 matrix A/B/C/D green"
+echo "[proof] PASS — Mission 001 matrix A/B/C/D green (stable executionId + outcome)"

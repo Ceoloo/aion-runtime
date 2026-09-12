@@ -118,7 +118,7 @@ import {
   type RiskLevel,
   type Run,
 } from '@aion/core';
-import { isDataError } from '@aion/data';
+import { isDataError, toOutcomeReference } from '@aion/data';
 import type { ControlPlane } from './control-plane.js';
 import type { Logger } from './logger.js';
 
@@ -134,6 +134,35 @@ export interface GatewayResponse {
  * Multi-process hardening still needs UNIQUE(request_id) in Data.
  */
 const inflightSubmits = new Map<string, Promise<void>>();
+
+/**
+ * Persist a durable business Outcome (Data-owned) and project it to Core's
+ * OutcomeReference. Execution *results* stay distinct from *outcomes*
+ * (principle #6); Runtime only seeds a pending/failed outcome seed so the
+ * Execution Object can expose a stable outcomeId across restarts.
+ */
+async function seedDurableOutcome(
+  cp: ControlPlane,
+  input: {
+    runId: Run['runId'];
+    missionId?: Run['missionId'];
+    status: 'completed' | 'failed';
+    outcomeSummary?: string;
+  },
+): Promise<{ outcomeId: string; outcomeReference: ReturnType<typeof toOutcomeReference> }> {
+  const outcome = await cp.dataLayer.outcomes.create({
+    runId: input.runId,
+    ...(input.missionId ? { missionId: input.missionId } : {}),
+    status: input.status === 'failed' ? 'failed' : 'pending',
+    ...(input.outcomeSummary
+      ? { metadata: { summary: input.outcomeSummary } }
+      : {}),
+  });
+  return {
+    outcomeId: outcome.outcomeId,
+    outcomeReference: toOutcomeReference(outcome),
+  };
+}
 
 function jsonError(status: number, code: string, message: string): GatewayResponse {
   return { status, body: { error: code, message } };
@@ -863,6 +892,22 @@ async function submitCommand(
       typeof raw.outcomeSummary === 'string' && raw.outcomeSummary.length > 0
         ? raw.outcomeSummary
         : undefined;
+
+    // On terminal completion/failure, seed a durable Outcome and expose it on
+    // the Execution Object so clients get a stable outcomeId (not only a stub
+    // OutcomeReference without identity).
+    let seededOutcome:
+      | { outcomeId: string; outcomeReference: ReturnType<typeof toOutcomeReference> }
+      | undefined;
+    if (result.status === 'completed' || result.status === 'failed') {
+      seededOutcome = await seedDurableOutcome(cp, {
+        runId: result.run.runId,
+        missionId: result.run.missionId,
+        status: result.status,
+        ...(outcomeSummary !== undefined ? { outcomeSummary } : {}),
+      });
+    }
+
     const execution = createExecutionObject({
       run: result.run,
       agent,
@@ -884,6 +929,7 @@ async function submitCommand(
       projectId: agent?.projectId,
       ...(revenueAttributed !== undefined ? { revenueAttributed } : {}),
       ...(outcomeSummary !== undefined ? { outcomeSummary } : {}),
+      ...(seededOutcome ? { outcomeId: seededOutcome.outcomeId as never } : {}),
     });
     await cp.dataLayer.executions.save(execution);
 
@@ -892,8 +938,12 @@ async function submitCommand(
       run_id: result.run.runId,
       execution_id: execution.executionId,
       status: result.status,
+      ...(seededOutcome ? { outcome_id: seededOutcome.outcomeId } : {}),
       ...(catalogServiceKey ? { service_key: catalogServiceKey } : {}),
     });
+
+    const outcomeReference =
+      seededOutcome?.outcomeReference ?? result.outcomeReference;
 
     return {
       status: result.status === 'denied' ? 403 : result.status === 'awaiting_approval' ? 202 : 200,
@@ -904,7 +954,7 @@ async function submitCommand(
         decision: result.decision,
         ...(result.result ? { result: result.result } : {}),
         ...(result.approval ? { approval: result.approval } : {}),
-        ...(result.outcomeReference ? { outcomeReference: result.outcomeReference } : {}),
+        ...(outcomeReference ? { outcomeReference } : {}),
         ...(catalogService
           ? {
               service: {
@@ -979,6 +1029,22 @@ async function decideApproval(
   const actor = await cp.dataLayer.actors.get(result.run.actorId);
   const agent = actor?.actorType === 'agent' ? actor : undefined;
   const existing = await cp.dataLayer.executions.getByRunId(result.run.runId);
+
+  let seededOutcome:
+    | { outcomeId: string; outcomeReference: ReturnType<typeof toOutcomeReference> }
+    | undefined;
+  if (
+    (result.status === 'completed' || result.status === 'failed') &&
+    !existing?.outcomeId
+  ) {
+    seededOutcome = await seedDurableOutcome(cp, {
+      runId: result.run.runId,
+      missionId: result.run.missionId,
+      status: result.status,
+      ...(existing?.outcomeSummary ? { outcomeSummary: existing.outcomeSummary } : {}),
+    });
+  }
+
   const execution = createExecutionObject({
     run: result.run,
     agent,
@@ -998,6 +1064,10 @@ async function decideApproval(
       result.command.rootExecutionId ??
       existing?.rootExecutionId,
     tenantId: agent?.tenantId ?? existing?.tenantId,
+    outcomeId:
+      (seededOutcome?.outcomeId as never) ?? existing?.outcomeId,
+    outcomeSummary: existing?.outcomeSummary,
+    revenueAttributed: existing?.revenueAttributed,
     auditTrace: [
       ...(existing?.auditTrace ?? []),
       {
@@ -1005,6 +1075,15 @@ async function decideApproval(
         event: parsed.data.approve ? 'approval.granted' : 'approval.rejected',
         detail: { approvalId },
       },
+      ...(seededOutcome
+        ? [
+            {
+              at: result.run.updatedAt,
+              event: 'outcome.seeded',
+              detail: { outcomeId: seededOutcome.outcomeId },
+            },
+          ]
+        : []),
     ],
   });
   await cp.dataLayer.executions.save(execution);
@@ -1013,7 +1092,9 @@ async function decideApproval(
     operation: 'POST /v1/approvals/:id/decision',
     approval_id: approvalId,
     run_id: result.run.runId,
+    execution_id: execution.executionId,
     status: result.status,
+    ...(execution.outcomeId ? { outcome_id: execution.outcomeId } : {}),
   });
 
   return {
@@ -1024,6 +1105,11 @@ async function decideApproval(
       execution,
       decision: result.decision,
       ...(result.result ? { result: result.result } : {}),
+      ...(seededOutcome
+        ? { outcomeReference: seededOutcome.outcomeReference }
+        : result.outcomeReference
+          ? { outcomeReference: result.outcomeReference }
+          : {}),
     },
   };
 }

@@ -11,12 +11,14 @@ import type { IncomingMessage } from 'node:http';
 import {
   createHumanActor,
   capability,
+  newOutcomeId,
   newRunId,
   newCommandId,
   newCorrelationId,
   newRequestId,
   type Run,
 } from '@aion/core';
+import type { OutcomeRecord } from '@aion/data';
 import type { ControlPlane } from './control-plane.js';
 import { handleGatewayRequest } from './gateway.js';
 import { Logger } from './logger.js';
@@ -104,6 +106,28 @@ function buildRaceControlPlane(): {
       autonomyGrants: {
         async getActive() {
           return undefined;
+        },
+      },
+      // Required after main's durable-outcome seeding on terminal submit.
+      outcomes: {
+        async create(input: {
+          runId: string;
+          missionId?: string;
+          status?: OutcomeRecord['status'];
+          metadata?: Record<string, unknown>;
+        }): Promise<OutcomeRecord> {
+          const now = new Date().toISOString();
+          return {
+            outcomeId: newOutcomeId(),
+            runId: input.runId as OutcomeRecord['runId'],
+            ...(input.missionId
+              ? { missionId: input.missionId as OutcomeRecord['missionId'] }
+              : {}),
+            status: input.status ?? 'pending',
+            metadata: input.metadata ?? {},
+            createdAt: now,
+            updatedAt: now,
+          };
         },
       },
     },
