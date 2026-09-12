@@ -97,6 +97,7 @@ source "${M001_ANCHORS}.vars"
 set +a
 : "${PROOF_D_RUN_ID:?missing PROOF_D_RUN_ID}"
 : "${PROOF_D_APPROVAL_ID:?missing PROOF_D_APPROVAL_ID}"
+: "${PROOF_D_EXECUTION_ID:?missing PROOF_D_EXECUTION_ID}"
 
 echo "[cert-v01] kill Runtime #1 (Mission 001 durability restart)"
 stop_runtime "$RT_PID"
@@ -113,6 +114,7 @@ PROOF_MODE=d-resume \
   PROOF_D_REQUEST_ID="${PROOF_D_REQUEST_ID:-}" \
   PROOF_D_RUN_ID="$PROOF_D_RUN_ID" \
   PROOF_D_APPROVAL_ID="$PROOF_D_APPROVAL_ID" \
+  PROOF_D_EXECUTION_ID="$PROOF_D_EXECUTION_ID" \
   AION_RUNTIME_URL="$AION_RUNTIME_URL" \
   node dist/mission001-proof-matrix.js
 

@@ -5,7 +5,9 @@
  * PASS B — Unauthorized service denied before execution (no side effect)
  * PASS C — R2 pauses, approval resumes SAME run once; requestId replay is
  *          idempotent; second decision cannot double-execute
- * PASS D — Runtime process restart: paused run still queryable, then resume
+ * PASS D — Runtime process restart: paused Execution Object still queryable by
+ *           stable executionId; resume once (same run + same executionId, cost
+ *           recorded, durable outcome exposed). No double execute.
  *
  * Invoked by scripts/mission001-proof-matrix.sh against a live Runtime + Postgres.
  */
@@ -28,10 +30,13 @@ interface CommandResponse {
     executionId?: string;
     status?: string;
     cost?: { units?: number; tokens?: number };
+    outcomeId?: string;
+    outcomeSummary?: string;
   } | null;
   approval?: { approvalId: string; status?: string };
   decision?: { decision?: string; reason?: string };
   result?: { status?: string; cost?: { units?: number } };
+  outcomeReference?: { outcomeId?: string; runId?: string; status?: string };
   service?: {
     serviceKey?: string;
     riskLevel?: string;
@@ -291,16 +296,30 @@ async function passDPrepare(
     serviceKey: SERVICE_R2,
     requestId,
     payload: { proof: 'D' },
+    outcomeSummary: 'mission001 PASS D gated follow-up',
   })) as CommandResponse;
 
   if (paused.status !== 'awaiting_approval') {
     fail('D-PREPARE', `expected awaiting_approval, got ${paused.status}`);
   }
+  const executionId = paused.execution?.executionId;
+  if (!executionId) fail('D-PREPARE', 'missing stable executionId on gated response');
+  if (paused.execution?.status !== 'awaiting_approval') {
+    fail(
+      'D-PREPARE',
+      `expected execution status awaiting_approval, got ${paused.execution?.status}`,
+    );
+  }
+
   // Emit machine-readable anchors for the shell script after restart.
   console.log(`PROOF_D_REQUEST_ID=${requestId}`);
   console.log(`PROOF_D_RUN_ID=${paused.run?.runId}`);
   console.log(`PROOF_D_APPROVAL_ID=${paused.approval?.approvalId}`);
-  ok('D-PREPARE', `paused run ${paused.run?.runId} approval ${paused.approval?.approvalId}`);
+  console.log(`PROOF_D_EXECUTION_ID=${executionId}`);
+  ok(
+    'D-PREPARE',
+    `paused execution ${executionId} run ${paused.run?.runId} approval ${paused.approval?.approvalId}`,
+  );
 }
 
 async function passDResume(
@@ -310,17 +329,45 @@ async function passDResume(
   const runId = process.env.PROOF_D_RUN_ID;
   const approvalId = process.env.PROOF_D_APPROVAL_ID;
   const requestId = process.env.PROOF_D_REQUEST_ID;
+  const executionId = process.env.PROOF_D_EXECUTION_ID;
   if (!runId || !approvalId) fail('D-RESUME', 'PROOF_D_RUN_ID and PROOF_D_APPROVAL_ID required');
+  if (!executionId) fail('D-RESUME', 'PROOF_D_EXECUTION_ID required');
 
   const runBody = (await client.getRun(runId)) as {
     run?: { runId: string; state: string };
-    execution?: { executionId?: string } | null;
+    execution?: { executionId?: string; status?: string } | null;
   };
   if (!runBody.run) fail('D-RESUME', `run ${runId} not queryable after restart`);
   if (runBody.run.state !== 'awaiting_approval') {
     fail('D-RESUME', `expected awaiting_approval after restart, got ${runBody.run.state}`);
   }
   ok('D-RESUME', `run ${runId} still awaiting_approval after Runtime restart`);
+
+  // Stable Execution Object id must survive the process kill/restart.
+  const byId = (await client.getExecution(executionId, { tenantId: 'aion-systems' })) as {
+    execution?: {
+      executionId?: string;
+      status?: string;
+      runId?: string;
+      outcomeSummary?: string;
+    };
+  };
+  if (!byId.execution?.executionId) {
+    fail('D-RESUME', `execution ${executionId} not queryable by id after restart`);
+  }
+  if (byId.execution.executionId !== executionId) {
+    fail('D-RESUME', 'executionId changed across Runtime restart');
+  }
+  if (byId.execution.runId !== runId) {
+    fail('D-RESUME', 'execution/run binding changed across restart');
+  }
+  if (byId.execution.status !== 'awaiting_approval') {
+    fail(
+      'D-RESUME',
+      `expected execution awaiting_approval after restart, got ${byId.execution.status}`,
+    );
+  }
+  ok('D-RESUME', `execution ${executionId} still awaiting_approval after Runtime restart`);
 
   // Replay submit with same requestId must not duplicate.
   if (requestId) {
@@ -333,6 +380,9 @@ async function passDResume(
     if (replay.run?.runId !== runId) {
       fail('D-RESUME', 'post-restart requestId replay changed runId');
     }
+    if (replay.execution?.executionId && replay.execution.executionId !== executionId) {
+      fail('D-RESUME', 'post-restart requestId replay changed executionId');
+    }
   }
 
   const resumed = (await client.decideApproval(approvalId, {
@@ -344,15 +394,48 @@ async function passDResume(
   if (resumed.status !== 'completed' || resumed.run?.runId !== runId) {
     fail('D-RESUME', `resume failed: status=${resumed.status} run=${resumed.run?.runId}`);
   }
+  if (resumed.execution?.executionId !== executionId) {
+    fail(
+      'D-RESUME',
+      `resume changed executionId: expected ${executionId}, got ${resumed.execution?.executionId}`,
+    );
+  }
+
   const byRun = (await client.getExecutionByRun(runId, { tenantId: 'aion-systems' })) as {
-    execution?: { executionId?: string; cost?: { units?: number } };
+    execution?: {
+      executionId?: string;
+      status?: string;
+      cost?: { units?: number };
+      outcomeId?: string;
+    };
   };
   if (!byRun.execution?.executionId) {
     fail('D-RESUME', 'execution not queryable by run after resume');
   }
+  if (byRun.execution.executionId !== executionId) {
+    fail('D-RESUME', 'get-by-run returned a different executionId after resume');
+  }
+  if (byRun.execution.status !== 'succeeded') {
+    fail('D-RESUME', `expected execution succeeded after resume, got ${byRun.execution.status}`);
+  }
   const units = Number(byRun.execution.cost?.units ?? resumed.result?.cost?.units ?? 0);
   if (!(units > 0)) fail('D-RESUME', `expected cost > 0 after restart resume, got ${units}`);
-  ok('D', `restart durable — same run ${runId} resumed once, cost=${units}`);
+
+  const outcomeId =
+    byRun.execution.outcomeId ??
+    resumed.execution?.outcomeId ??
+    resumed.outcomeReference?.outcomeId;
+  if (!outcomeId) {
+    fail('D-RESUME', 'expected durable outcomeId exposed on Execution Object after resume');
+  }
+  if (resumed.outcomeReference && resumed.outcomeReference.outcomeId !== outcomeId) {
+    fail('D-RESUME', 'outcomeReference.outcomeId does not match Execution Object');
+  }
+
+  ok(
+    'D',
+    `restart durable — same execution ${executionId} / run ${runId} resumed once, cost=${units}, outcome=${outcomeId}`,
+  );
 }
 
 main().catch((err) => {

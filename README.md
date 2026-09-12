@@ -56,7 +56,7 @@ contracts are never forked.
 | Liveness | `GET /health/live` → `200` while healthy; no dependency work. |
 | Readiness | `GET /health/ready` → `200` only when the DB is reachable; else `503`. |
 | Release info | `GET /` → `{ git_sha, service_version, build_time, environment }`. |
-| Execution Gateway | Same process. `POST /v1/commands` submits governed work (`serviceKey` preferred); `GET /v1/services` lists the catalog; `GET /v1/runs/:id` / `GET /v1/executions/:id` read state; `POST /v1/approvals/:id/decision` resumes gated runs. Creates durable `aion_execution` records. |
+| Execution Gateway | Same process. `POST /v1/commands` submits governed work (`serviceKey` preferred); `GET /v1/services` lists the catalog; `GET /v1/runs/:id` / `GET /v1/executions/:id` read state; `POST /v1/approvals/:id/decision` resumes gated runs. Creates durable `aion_execution` records with stable `executionId`; on terminal completion/failure seeds a durable Outcome and exposes `outcomeId` / `outcomeReference`. |
 | Grok / workers | Use `GrokRuntimeClient` / `RuntimeClient` in `src/clients` — Runtime clients, not embedded control planes. |
 | Config | env only: `DATABASE_URL` (required), `AION_ENVIRONMENT`, `PORT`, `LOG_LEVEL`, `DATABASE_SSL`, release vars. |
 | Credentials | app role only. Must **never** receive `MIGRATION_DATABASE_URL`. |
