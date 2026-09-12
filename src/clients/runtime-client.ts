@@ -381,6 +381,87 @@ export class RuntimeClient {
     });
   }
 
+  /** Create a durable business outcome (ADR-003). */
+  async createOutcome(body: {
+    runId: string;
+    missionId?: string;
+    status?: string;
+    outcomeType?: string;
+    externalReference?: string;
+    value?: number;
+    currency?: string;
+    measuredAt?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<unknown> {
+    return this.request('POST', '/v1/outcomes', { body });
+  }
+
+  async getOutcome(outcomeId: string): Promise<unknown> {
+    return this.request('GET', `/v1/outcomes/${encodeURIComponent(outcomeId)}`);
+  }
+
+  async listOutcomes(query: { runId?: string; missionId?: string }): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (query.runId) params.set('runId', query.runId);
+    if (query.missionId) params.set('missionId', query.missionId);
+    const qs = params.toString();
+    return this.request('GET', `/v1/outcomes${qs ? `?${qs}` : ''}`);
+  }
+
+  async patchOutcome(
+    outcomeId: string,
+    body: {
+      status?: string;
+      outcomeType?: string;
+      externalReference?: string;
+      value?: number;
+      currency?: string;
+      measuredAt?: string;
+      metadata?: Record<string, unknown>;
+    },
+  ): Promise<unknown> {
+    return this.request('PATCH', `/v1/outcomes/${encodeURIComponent(outcomeId)}`, {
+      body,
+    });
+  }
+
+  /** Create an opaque versioned revenue session checkpoint. */
+  async createRevenueSession(body: {
+    sessionId: string;
+    checkpoint: unknown;
+  }): Promise<unknown> {
+    return this.request('POST', '/v1/revenue-sessions', { body });
+  }
+
+  async getRevenueSession(sessionId: string): Promise<unknown> {
+    return this.request(
+      'GET',
+      `/v1/revenue-sessions/${encodeURIComponent(sessionId)}`,
+    );
+  }
+
+  async putRevenueSession(
+    sessionId: string,
+    body: {
+      revision: number;
+      checkpoint?: unknown;
+      finalRecord?: unknown;
+    },
+  ): Promise<unknown> {
+    return this.request(
+      'PUT',
+      `/v1/revenue-sessions/${encodeURIComponent(sessionId)}`,
+      { body },
+    );
+  }
+
+  async listRevenueSessions(status: 'active' | 'finalized'): Promise<unknown> {
+    return this.request(
+      'GET',
+      `/v1/revenue-sessions?status=${encodeURIComponent(status)}`,
+    );
+  }
+
   private async request(
     method: string,
     path: string,
