@@ -127,6 +127,14 @@ export interface GatewayResponse {
   body: unknown;
 }
 
+/**
+ * Single-process coalescing for concurrent POSTs that share a requestId.
+ * Between awaits JS runs to completion, so get-or-create on this Map closes
+ * the check-then-act race left by getByRequestId under Promise.all.
+ * Multi-process hardening still needs UNIQUE(request_id) in Data.
+ */
+const inflightSubmits = new Map<string, Promise<void>>();
+
 function jsonError(status: number, code: string, message: string): GatewayResponse {
   return { status, body: { error: code, message } };
 }
@@ -705,182 +713,218 @@ async function submitCommand(
     // REQUIRE_APPROVAL is still handled by the orchestrator / catalog gate below.
   }
 
-  // Submit idempotency: same requestId returns the original run/execution
-  // without creating a second execution (approval/retry safety).
-  if (typeof raw.requestId === 'string' && raw.requestId.length > 0) {
-    const existing = await cp.dataLayer.runs.getByRequestId(raw.requestId);
-    if (existing) {
-      const execution = await cp.dataLayer.executions.getByRunId(existing.runId);
-      const approval =
-        existing.approvalId != null
-          ? await cp.dataLayer.approvals.get(existing.approvalId)
-          : undefined;
-      const status =
-        existing.state === 'awaiting_approval'
-          ? 'awaiting_approval'
-          : existing.state === 'denied'
-            ? 'denied'
-            : existing.state === 'failed'
-              ? 'failed'
-              : 'completed';
-      logger.info('gateway_command_idempotent_replay', {
-        operation: 'POST /v1/commands',
-        request_id: raw.requestId,
-        run_id: existing.runId,
+  // Submit idempotency + single-process coalescing for concurrent same requestId.
+  // Sequential retries hit the DB path; concurrent duplicates await the in-flight leader.
+  const requestId =
+    typeof raw.requestId === 'string' && raw.requestId.length > 0
+      ? raw.requestId
+      : undefined;
+
+  const respondIdempotentReplay = async (
+    existing: Awaited<ReturnType<typeof cp.dataLayer.runs.getByRequestId>> & object,
+  ): Promise<GatewayResponse> => {
+    const execution = await cp.dataLayer.executions.getByRunId(existing.runId);
+    const approval =
+      existing.approvalId != null
+        ? await cp.dataLayer.approvals.get(existing.approvalId)
+        : undefined;
+    const status =
+      existing.state === 'awaiting_approval'
+        ? 'awaiting_approval'
+        : existing.state === 'denied'
+          ? 'denied'
+          : existing.state === 'failed'
+            ? 'failed'
+            : 'completed';
+    logger.info('gateway_command_idempotent_replay', {
+      operation: 'POST /v1/commands',
+      request_id: requestId,
+      run_id: existing.runId,
+      status,
+    });
+    return {
+      status: status === 'denied' ? 403 : status === 'awaiting_approval' ? 202 : 200,
+      body: {
         status,
+        run: existing,
+        execution: execution ?? null,
+        ...(approval ? { approval } : {}),
+        idempotentReplay: true,
+        ...(catalogService
+          ? {
+              service: {
+                serviceKey: catalogService.serviceKey,
+                version: catalogService.version,
+                riskLevel: catalogService.riskLevel,
+                approvalRequired: catalogService.approvalRequired,
+                requiredPermissions: catalogService.requiredPermissions,
+                capability: catalogService.capability,
+              },
+            }
+          : {}),
+      },
+    };
+  };
+
+  let releaseInflight: (() => void) | undefined;
+  if (requestId) {
+    const existing = await cp.dataLayer.runs.getByRequestId(requestId);
+    if (existing) {
+      return respondIdempotentReplay(existing);
+    }
+
+    const inflight = inflightSubmits.get(requestId);
+    if (inflight) {
+      await inflight.catch(() => undefined);
+      const created = await cp.dataLayer.runs.getByRequestId(requestId);
+      if (created) {
+        return respondIdempotentReplay(created);
+      }
+      // Leader failed before persistence — fall through and create.
+    } else {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
       });
-      return {
-        status: status === 'denied' ? 403 : status === 'awaiting_approval' ? 202 : 200,
-        body: {
-          status,
-          run: existing,
-          execution: execution ?? null,
-          ...(approval ? { approval } : {}),
-          idempotentReplay: true,
-          ...(catalogService
-            ? {
-                service: {
-                  serviceKey: catalogService.serviceKey,
-                  version: catalogService.version,
-                  riskLevel: catalogService.riskLevel,
-                  approvalRequired: catalogService.approvalRequired,
-                  requiredPermissions: catalogService.requiredPermissions,
-                  capability: catalogService.capability,
-                },
-              }
-            : {}),
-        },
+      inflightSubmits.set(requestId, gate);
+      releaseInflight = () => {
+        inflightSubmits.delete(requestId);
+        release();
       };
     }
   }
 
-  const metadata: Record<string, unknown> = {
-    ...(raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
-      ? (raw.metadata as Record<string, unknown>)
-      : {}),
-    ...(actor.actorType === 'agent' && (actor as AgentActor).tenantId
-      ? { tenantId: (actor as AgentActor).tenantId }
-      : {}),
-    ...(catalogServiceKey ? { serviceKey: catalogServiceKey } : {}),
-    ...(catalogApprovalRequired ? { approvalRequired: true } : {}),
-    ...(catalogService
-      ? {
-          serviceVersion: catalogService.version,
-          serviceRiskLevel: catalogService.riskLevel,
-          serviceOwner: catalogService.owner,
-        }
-      : {}),
-    ...(autonomyGrant ? { autonomyGrant } : {}),
-    ...(raw.manualAutonomyDemote === true ? { manualAutonomyDemote: true } : {}),
-    ...(typeof raw.approvalId === 'string' ? { approvalId: raw.approvalId } : {}),
-  };
-
-  const mintedExecutionId =
-    typeof raw.executionId === 'string' && raw.executionId.length > 0
-      ? raw.executionId
-      : newExecutionId();
-
-  const input: CommandInput = {
-    name: raw.name,
-    actor,
-    capability: cap,
-    ...(typeof raw.requestId === 'string'
-      ? { requestId: raw.requestId as CommandInput['requestId'] }
-      : {}),
-    ...(typeof raw.missionId === 'string'
-      ? { missionId: raw.missionId as CommandInput['missionId'] }
-      : {}),
-    ...(typeof raw.workflowId === 'string'
-      ? { workflowId: raw.workflowId as CommandInput['workflowId'] }
-      : catalogWorkflowId
-        ? { workflowId: catalogWorkflowId as CommandInput['workflowId'] }
+  try {
+    const metadata: Record<string, unknown> = {
+      ...(raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
+        ? (raw.metadata as Record<string, unknown>)
         : {}),
-    ...(typeof raw.toolId === 'string' ? { toolId: raw.toolId as CommandInput['toolId'] } : {}),
-    ...(raw.payload && typeof raw.payload === 'object' && !Array.isArray(raw.payload)
-      ? { payload: raw.payload as Record<string, unknown> }
-      : {}),
-    ...(typeof raw.riskLevel === 'string'
-      ? { riskLevel: raw.riskLevel as RiskLevel }
-      : catalogRisk
-        ? { riskLevel: catalogRisk }
+      ...(actor.actorType === 'agent' && (actor as AgentActor).tenantId
+        ? { tenantId: (actor as AgentActor).tenantId }
         : {}),
-    executionId: mintedExecutionId,
-    ...(typeof raw.parentExecutionId === 'string'
-      ? { parentExecutionId: raw.parentExecutionId }
-      : {}),
-    ...(typeof raw.rootExecutionId === 'string' ? { rootExecutionId: raw.rootExecutionId } : {}),
-    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
-  };
-
-  const result = await cp.orchestrator.submit(input);
-  const agent = actor.actorType === 'agent' ? (actor as AgentActor) : undefined;
-  const revenueAttributed =
-    typeof raw.revenueAttributed === 'number' && Number.isFinite(raw.revenueAttributed)
-      ? raw.revenueAttributed
-      : undefined;
-  const outcomeSummary =
-    typeof raw.outcomeSummary === 'string' && raw.outcomeSummary.length > 0
-      ? raw.outcomeSummary
-      : undefined;
-  const execution = createExecutionObject({
-    run: result.run,
-    agent,
-    result: result.result,
-    executionId:
-      (typeof raw.executionId === 'string' ? (raw.executionId as never) : undefined) ??
-      result.command.executionId ??
-      (mintedExecutionId as never),
-    parentExecutionId:
-      (typeof raw.parentExecutionId === 'string'
-        ? (raw.parentExecutionId as never)
-        : undefined) ?? result.command.parentExecutionId,
-    rootExecutionId:
-      (typeof raw.rootExecutionId === 'string' ? (raw.rootExecutionId as never) : undefined) ??
-      result.command.rootExecutionId,
-    tenantId: agent?.tenantId,
-    companyId: agent?.companyId,
-    ventureId: agent?.ventureId,
-    projectId: agent?.projectId,
-    ...(revenueAttributed !== undefined ? { revenueAttributed } : {}),
-    ...(outcomeSummary !== undefined ? { outcomeSummary } : {}),
-  });
-  await cp.dataLayer.executions.save(execution);
-
-  logger.info('gateway_command_submitted', {
-    operation: 'POST /v1/commands',
-    run_id: result.run.runId,
-    execution_id: execution.executionId,
-    status: result.status,
-    ...(catalogServiceKey ? { service_key: catalogServiceKey } : {}),
-  });
-
-  return {
-    status: result.status === 'denied' ? 403 : result.status === 'awaiting_approval' ? 202 : 200,
-    body: {
-      status: result.status,
-      run: result.run,
-      execution,
-      decision: result.decision,
-      ...(result.result ? { result: result.result } : {}),
-      ...(result.approval ? { approval: result.approval } : {}),
-      ...(result.outcomeReference ? { outcomeReference: result.outcomeReference } : {}),
+      ...(catalogServiceKey ? { serviceKey: catalogServiceKey } : {}),
+      ...(catalogApprovalRequired ? { approvalRequired: true } : {}),
       ...(catalogService
         ? {
-            service: {
-              serviceKey: catalogService.serviceKey,
-              version: catalogService.version,
-              riskLevel: catalogService.riskLevel,
-              approvalRequired: catalogService.approvalRequired,
-              requiredPermissions: catalogService.requiredPermissions,
-              capability: catalogService.capability,
-              owner: catalogService.owner,
-              costHintUnits: catalogService.costHintUnits,
-              evalRefs: catalogService.evalRefs,
-            },
+            serviceVersion: catalogService.version,
+            serviceRiskLevel: catalogService.riskLevel,
+            serviceOwner: catalogService.owner,
           }
         : {}),
-    },
-  };
+      ...(autonomyGrant ? { autonomyGrant } : {}),
+      ...(raw.manualAutonomyDemote === true ? { manualAutonomyDemote: true } : {}),
+      ...(typeof raw.approvalId === 'string' ? { approvalId: raw.approvalId } : {}),
+    };
+
+    const mintedExecutionId =
+      typeof raw.executionId === 'string' && raw.executionId.length > 0
+        ? raw.executionId
+        : newExecutionId();
+
+    const input: CommandInput = {
+      name: raw.name,
+      actor,
+      capability: cap,
+      ...(typeof raw.requestId === 'string'
+        ? { requestId: raw.requestId as CommandInput['requestId'] }
+        : {}),
+      ...(typeof raw.missionId === 'string'
+        ? { missionId: raw.missionId as CommandInput['missionId'] }
+        : {}),
+      ...(typeof raw.workflowId === 'string'
+        ? { workflowId: raw.workflowId as CommandInput['workflowId'] }
+        : catalogWorkflowId
+          ? { workflowId: catalogWorkflowId as CommandInput['workflowId'] }
+          : {}),
+      ...(typeof raw.toolId === 'string' ? { toolId: raw.toolId as CommandInput['toolId'] } : {}),
+      ...(raw.payload && typeof raw.payload === 'object' && !Array.isArray(raw.payload)
+        ? { payload: raw.payload as Record<string, unknown> }
+        : {}),
+      ...(typeof raw.riskLevel === 'string'
+        ? { riskLevel: raw.riskLevel as RiskLevel }
+        : catalogRisk
+          ? { riskLevel: catalogRisk }
+          : {}),
+      executionId: mintedExecutionId,
+      ...(typeof raw.parentExecutionId === 'string'
+        ? { parentExecutionId: raw.parentExecutionId }
+        : {}),
+      ...(typeof raw.rootExecutionId === 'string' ? { rootExecutionId: raw.rootExecutionId } : {}),
+      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+    };
+
+    const result = await cp.orchestrator.submit(input);
+    const agent = actor.actorType === 'agent' ? (actor as AgentActor) : undefined;
+    const revenueAttributed =
+      typeof raw.revenueAttributed === 'number' && Number.isFinite(raw.revenueAttributed)
+        ? raw.revenueAttributed
+        : undefined;
+    const outcomeSummary =
+      typeof raw.outcomeSummary === 'string' && raw.outcomeSummary.length > 0
+        ? raw.outcomeSummary
+        : undefined;
+    const execution = createExecutionObject({
+      run: result.run,
+      agent,
+      result: result.result,
+      executionId:
+        (typeof raw.executionId === 'string' ? (raw.executionId as never) : undefined) ??
+        result.command.executionId ??
+        (mintedExecutionId as never),
+      parentExecutionId:
+        (typeof raw.parentExecutionId === 'string'
+          ? (raw.parentExecutionId as never)
+          : undefined) ?? result.command.parentExecutionId,
+      rootExecutionId:
+        (typeof raw.rootExecutionId === 'string' ? (raw.rootExecutionId as never) : undefined) ??
+        result.command.rootExecutionId,
+      tenantId: agent?.tenantId,
+      companyId: agent?.companyId,
+      ventureId: agent?.ventureId,
+      projectId: agent?.projectId,
+      ...(revenueAttributed !== undefined ? { revenueAttributed } : {}),
+      ...(outcomeSummary !== undefined ? { outcomeSummary } : {}),
+    });
+    await cp.dataLayer.executions.save(execution);
+
+    logger.info('gateway_command_submitted', {
+      operation: 'POST /v1/commands',
+      run_id: result.run.runId,
+      execution_id: execution.executionId,
+      status: result.status,
+      ...(catalogServiceKey ? { service_key: catalogServiceKey } : {}),
+    });
+
+    return {
+      status: result.status === 'denied' ? 403 : result.status === 'awaiting_approval' ? 202 : 200,
+      body: {
+        status: result.status,
+        run: result.run,
+        execution,
+        decision: result.decision,
+        ...(result.result ? { result: result.result } : {}),
+        ...(result.approval ? { approval: result.approval } : {}),
+        ...(result.outcomeReference ? { outcomeReference: result.outcomeReference } : {}),
+        ...(catalogService
+          ? {
+              service: {
+                serviceKey: catalogService.serviceKey,
+                version: catalogService.version,
+                riskLevel: catalogService.riskLevel,
+                approvalRequired: catalogService.approvalRequired,
+                requiredPermissions: catalogService.requiredPermissions,
+                capability: catalogService.capability,
+                owner: catalogService.owner,
+                costHintUnits: catalogService.costHintUnits,
+                evalRefs: catalogService.evalRefs,
+              },
+            }
+          : {}),
+      },
+    };
+  } finally {
+    releaseInflight?.();
+  }
 }
 
 async function getRun(runId: string, cp: ControlPlane): Promise<GatewayResponse> {

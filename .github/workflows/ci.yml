@@ -45,6 +45,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Gateway unit proofs (outcomes/sessions + submit concurrency)
+        run: npm run test:gateway
+
       - name: Portability check
         run: npm run portability-check
 

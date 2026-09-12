@@ -2,7 +2,7 @@
   "name": "@aion/runtime",
   "version": "0.1.0",
   "private": true,
-  "description": "AION runtime host — the platform composition root. Boots AION Core over AION Data's durable Postgres adapters, exposes health/readiness, runs migrations, emits structured logs, and builds the one provider-neutral container image every deployment profile runs. Established by aion-docs ADR-002.",
+  "description": "AION runtime host \u2014 the platform composition root. Boots AION Core over AION Data's durable Postgres adapters, exposes health/readiness, runs migrations, emits structured logs, and builds the one provider-neutral container image every deployment profile runs. Established by aion-docs ADR-002.",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
@@ -31,7 +31,9 @@
     "proof:ghl-live-acceptance": "bash scripts/ghl-live-acceptance.sh",
     "proof:ghl-live-capability": "node dist/ghl-live-capability-proof.js",
     "proof:ie002": "bash scripts/ie002-proof-matrix.sh",
-    "test:outcomes-sessions": "npm run build && node --test dist/outcomes-sessions-gateway.test.js"
+    "test:outcomes-sessions": "npm run build && node --test dist/outcomes-sessions-gateway.test.js",
+    "test:submit-concurrency": "npm run build && node --test dist/commands-submit-concurrency.test.js",
+    "test:gateway": "npm run build && node --test dist/outcomes-sessions-gateway.test.js dist/commands-submit-concurrency.test.js"
   },
   "dependencies": {
     "@aion/core": "file:vendor/aion-core",
