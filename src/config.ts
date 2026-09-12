@@ -8,6 +8,9 @@
  * into the environment (provider-neutral — see contracts/deployment-contract.md).
  */
 
+import type { GatewayAuthConfig } from './auth/types.js';
+import { loadGatewayAuthConfig, AuthConfigError } from './auth/config.js';
+
 export type Environment = 'local' | 'staging' | 'production';
 
 export interface RuntimeConfig {
@@ -31,6 +34,12 @@ export interface RuntimeConfig {
    * Empty = no CORS headers (same-origin / non-browser clients only).
    */
   corsOrigins: string[];
+  /**
+   * Gateway identity plane (Mission: authn → authz).
+   * Staging/production default to mode=required; local defaults to open with
+   * durable-actor anti-escalation still enforced.
+   */
+  auth: GatewayAuthConfig;
 }
 
 export class ConfigError extends Error {
@@ -98,6 +107,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
+  let auth;
+  try {
+    auth = loadGatewayAuthConfig(env, environment);
+  } catch (err) {
+    if (err instanceof AuthConfigError) {
+      throw new ConfigError(err.message);
+    }
+    throw err;
+  }
+
   return {
     environment,
     databaseUrl,
@@ -106,6 +125,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     databaseSsl,
     runSmokeOnBoot: env.RUN_SMOKE_ON_BOOT === 'true',
     corsOrigins,
+    auth,
     release: {
       serviceVersion: env.SERVICE_VERSION ?? 'unknown',
       gitSha: env.GIT_SHA ?? 'unknown',
