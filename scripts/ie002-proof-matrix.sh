@@ -16,6 +16,9 @@ export GIT_SHA="${GIT_SHA:-local}"
 export SERVICE_VERSION="${SERVICE_VERSION:-0.1.0}"
 export BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 export AION_ENVIRONMENT=staging
+# Identity plane: harnesses default open auth (staging/production would otherwise
+# require AION_GATEWAY_API_KEYS). Override with AION_AUTH_MODE=required + keys.
+export AION_AUTH_MODE="${AION_AUTH_MODE:-open}"
 export DATABASE_SSL="${DATABASE_SSL:-false}"
 export AION_RUNTIME_URL="http://127.0.0.1:${PORT}"
 

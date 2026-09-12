@@ -59,6 +59,7 @@ function buildRaceControlPlane(): {
   const runsByRequestId = new Map<string, Run>();
   const runsById = new Map<string, Run>();
   const executionsByRunId = new Map<string, unknown>();
+  const actorsById = new Map<string, { actorId: string }>();
   let submits = 0;
 
   const runs = {
@@ -80,8 +81,11 @@ function buildRaceControlPlane(): {
   const cp = {
     dataLayer: {
       actors: {
-        async save() {
-          /* attribution only */
+        async save(actor: { actorId: string }) {
+          actorsById.set(actor.actorId, actor);
+        },
+        async get(actorId: string) {
+          return actorsById.get(actorId);
         },
       },
       runs,
@@ -187,6 +191,8 @@ function buildRaceControlPlane(): {
     },
     missionOrchestrator: {},
     routingOverrides: new Map(),
+    // Open mode: proofs exercise submit coalescing, not the identity plane.
+    auth: { mode: 'open' as const, apiKeys: [] },
     async checkDatabase() {},
     async close() {},
   } as unknown as ControlPlane;

@@ -33,7 +33,8 @@
     "proof:ie002": "bash scripts/ie002-proof-matrix.sh",
     "test:outcomes-sessions": "npm run build && node --test dist/outcomes-sessions-gateway.test.js",
     "test:submit-concurrency": "npm run build && node --test dist/commands-submit-concurrency.test.js",
-    "test:gateway": "npm run build && node --test dist/outcomes-sessions-gateway.test.js dist/commands-submit-concurrency.test.js"
+    "test:identity": "npm run build && node --test dist/auth/identity-plane.test.js",
+    "test:gateway": "npm run build && node --test dist/outcomes-sessions-gateway.test.js dist/commands-submit-concurrency.test.js dist/auth/identity-plane.test.js"
   },
   "dependencies": {
     "@aion/core": "file:vendor/aion-core",

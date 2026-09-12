@@ -27,6 +27,7 @@ import type {
 } from '@aion/core';
 import { createDataLayer, type DataLayer } from '@aion/data';
 import type { RuntimeConfig } from './config.js';
+import type { GatewayAuthConfig } from './auth/types.js';
 import { GhlAdapter, MISSION_009_CAPABILITIES, createGhlBackendFromEnv } from './adapters/ghl/index.js';
 
 /** The low-risk capability used by the boot self-check (aion-infra §45). */
@@ -140,6 +141,8 @@ export interface ControlPlane {
    * Keyed by `${tenantId}|${capability||serviceKey||*}`. Not adaptive auto-routing.
    */
   routingOverrides: Map<string, RoutingOverride>;
+  /** Gateway identity plane — principals + auth mode. */
+  auth: GatewayAuthConfig;
   /** SELECT 1 against the app connection — the readiness probe's DB check. */
   checkDatabase(): Promise<void>;
   close(): Promise<void>;
@@ -237,6 +240,7 @@ export function buildControlPlane(
     missionOrchestrator,
     policyEngine,
     routingOverrides: new Map(),
+    auth: config.auth,
     async checkDatabase(): Promise<void> {
       await dataLayer.pool.query('SELECT 1');
     },
