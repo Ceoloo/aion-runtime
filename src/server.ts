@@ -42,9 +42,10 @@ function corsHeaders(
   if (!config.corsOrigins.includes(origin)) return null;
   return {
     'access-control-allow-origin': origin,
-    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    // PATCH required for Operator Console mission close / terminalOutcome.
+    'access-control-allow-methods': 'GET, POST, PATCH, OPTIONS',
     'access-control-allow-headers':
-      'content-type, x-aion-tenant-id, authorization',
+      'content-type, x-aion-tenant-id, x-aion-operator-id, authorization',
     'access-control-max-age': '86400',
     vary: 'Origin',
   };
