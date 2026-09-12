@@ -18,6 +18,8 @@ export interface RuntimeClientOptions {
    * Sent as `x-aion-tenant-id` when method-level tenantId is omitted.
    */
   tenantId?: string;
+  /** Bearer token for gateway identity plane (ADR-005). */
+  apiKey?: string;
 }
 
 export interface TenantScopedRequest {
@@ -90,11 +92,13 @@ export class RuntimeClient {
   private readonly baseUrl: string;
   private readonly fetchFn: typeof fetch;
   private readonly defaultTenantId?: string;
+  private readonly apiKey?: string;
 
   constructor(options: RuntimeClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.fetchFn = options.fetch ?? fetch;
     this.defaultTenantId = options.tenantId;
+    this.apiKey = options.apiKey;
   }
 
   async submitCommand(input: SubmitCommandRequest): Promise<unknown> {
@@ -474,6 +478,9 @@ export class RuntimeClient {
     const tenantId = options?.tenantId ?? this.defaultTenantId;
     if (tenantId) {
       headers['x-aion-tenant-id'] = tenantId;
+    }
+    if (this.apiKey) {
+      headers['authorization'] = `Bearer ${this.apiKey}`;
     }
     const res = await this.fetchFn(`${this.baseUrl}${path}`, {
       method,

@@ -60,6 +60,7 @@
  *   GET  /v1/revenue-sessions?status=     — list active ids or finalized records
  */
 import type { IncomingMessage } from 'node:http';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   Actor,
   ApprovalDecision,
@@ -121,6 +122,19 @@ import {
 import { isDataError, toOutcomeReference } from '@aion/data';
 import type { ControlPlane } from './control-plane.js';
 import type { Logger } from './logger.js';
+import type { Principal } from './auth/types.js';
+import type { AuthDenied } from './auth/authenticate.js';
+import {
+  authenticateRequest,
+  assertPrincipalTenantAccess,
+} from './auth/authenticate.js';
+import {
+  resolveDurableActor,
+  resolveApproverActor,
+} from './auth/resolve-actor.js';
+
+/** Per-request principal bound at the gateway identity boundary. */
+const principalContext = new AsyncLocalStorage<Principal | null>();
 
 export interface GatewayResponse {
   status: number;
@@ -160,6 +174,10 @@ function jsonError(status: number, code: string, message: string): GatewayRespon
   return { status, body: { error: code, message } };
 }
 
+function authDeniedResponse(denied: AuthDenied): GatewayResponse {
+  return jsonError(denied.status, denied.code, denied.message);
+}
+
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -185,8 +203,13 @@ export async function handleGatewayRequest(
   const path = url.split('?')[0] ?? url;
 
   try {
+    const auth = authenticateRequest(req, cp.auth);
+    if (!auth.ok) return authDeniedResponse(auth);
+    const principal = auth.principal;
+    principalContext.enterWith(principal);
+
     if (method === 'POST' && path === '/v1/commands') {
-      return await submitCommand(await readJsonBody(req), cp, logger);
+      return await submitCommand(await readJsonBody(req), cp, logger, principal);
     }
 
     if (method === 'POST' && path === '/v1/missions/run') {
@@ -248,7 +271,7 @@ export async function handleGatewayRequest(
 
     const approvalMatch = /^\/v1\/approvals\/([^/]+)\/decision$/.exec(path);
     if (method === 'POST' && approvalMatch) {
-      return await decideApproval(approvalMatch[1]!, await readJsonBody(req), cp, logger);
+      return await decideApproval(approvalMatch[1]!, await readJsonBody(req), cp, logger, principal);
     }
 
     if (method === 'GET' && path === '/v1/executions') {
@@ -515,6 +538,7 @@ async function submitCommand(
   body: unknown,
   cp: ControlPlane,
   logger: Logger,
+  principal: Principal | null,
 ): Promise<GatewayResponse> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return jsonError(400, 'invalid_body', 'command body must be a JSON object');
@@ -525,7 +549,7 @@ async function submitCommand(
   if (!actorParsed.success) {
     return jsonError(400, 'invalid_actor', 'actor must satisfy the Core Actor contract');
   }
-  const actor = actorParsed.data;
+  let actor = actorParsed.data;
 
   if (typeof raw.name !== 'string' || raw.name.length < 1) {
     return jsonError(400, 'invalid_name', 'name is required');
@@ -586,8 +610,10 @@ async function submitCommand(
     cap = capParsed.data;
   }
 
-  // Every governed action is attributable to a registered actor.
-  await cp.dataLayer.actors.save(actor);
+  // Identity plane: durable Actor grants win over body self-assertion.
+  const resolved = await resolveDurableActor(cp, actor, principal, cp.auth.mode);
+  if (!resolved.ok) return authDeniedResponse(resolved);
+  actor = resolved.actor;
 
   // Catalog contract: requiredPermissions are deny-by-default grants the caller
   // must hold (in addition to the resolved capability itself).
@@ -945,6 +971,7 @@ async function decideApproval(
   body: unknown,
   cp: ControlPlane,
   logger: Logger,
+  principal: Principal | null,
 ): Promise<GatewayResponse> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return jsonError(400, 'invalid_body', 'decision body must be a JSON object');
@@ -964,8 +991,8 @@ async function decideApproval(
     );
   }
 
-  // Persist the deciding actor when provided so `approvals.decided_by` FK
-  // (and attribution) remain coherent after restart / approval resume.
+  // Identity plane: approver must be a verified human Actor (durable grants).
+  let claimedApprover: Actor | undefined;
   if (raw.actor !== undefined) {
     const actorParsed = Actor.safeParse(raw.actor);
     if (!actorParsed.success) {
@@ -978,8 +1005,16 @@ async function decideApproval(
         'actor.actorId must match decidedBy',
       );
     }
-    await cp.dataLayer.actors.save(actorParsed.data);
+    claimedApprover = actorParsed.data;
   }
+  const approverResolved = await resolveApproverActor(
+    cp,
+    parsed.data.decidedBy,
+    claimedApprover,
+    principal,
+    cp.auth.mode,
+  );
+  if (!approverResolved.ok) return authDeniedResponse(approverResolved);
 
   const result = await cp.orchestrator.resume(parsed.data);
   const actor = await cp.dataLayer.actors.get(result.run.actorId);
@@ -1093,6 +1128,11 @@ function assertExecutionTenantAccess(
       'x-aion-tenant-id header is required to read executions (Mission 003)',
     );
   }
+  // When a Principal is authenticated, the tenant header is a filter — not
+  // authority. It must be within the principal's bound tenantIds.
+  const principal = principalContext.getStore() ?? null;
+  const tenantDenied = assertPrincipalTenantAccess(principal, callerTenant, { requireTenant: true });
+  if (tenantDenied) return authDeniedResponse(tenantDenied);
   if (execution.tenantId && execution.tenantId !== callerTenant) {
     return jsonError(
       403,
