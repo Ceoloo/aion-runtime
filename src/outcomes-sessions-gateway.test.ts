@@ -243,6 +243,26 @@ test('outcomes: create, get, list, patch + optional execution link', async () =>
   );
 });
 
+test('outcomes: reject product-forked status values (e.g. cancelled)', async () => {
+  const { cp } = buildMockControlPlane();
+  const rejected = await handleGatewayRequest(
+    'POST',
+    '/v1/outcomes',
+    mockReq({
+      runId: newRunId(),
+      status: 'cancelled',
+      outcomeType: 'revenue.call',
+    }),
+    cp,
+    logger,
+  );
+  assert.equal(rejected?.status, 400);
+  assert.equal(
+    (rejected?.body as { error: string }).error,
+    'invalid_status',
+  );
+});
+
 test('revenue sessions: create, checkpoint, finalize, reload, stale 409', async () => {
   const { cp } = buildMockControlPlane();
   const sessionId = 'rev_sess_proof_001';
