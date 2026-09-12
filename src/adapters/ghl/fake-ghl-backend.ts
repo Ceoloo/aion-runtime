@@ -44,6 +44,7 @@ export class FakeGhlBackend implements GhlBackend {
   readonly name = 'ghl-fake';
   private readonly workspaces = new Map<string, Workspace>();
   private nextFailure: GhlBackendFailure | undefined;
+  private readonly idempotencyCache = new Map<string, GhlBackendResult>();
 
   mutationCount(tenantId: string): number {
     return this.workspace(tenantId).mutationCount;
@@ -76,6 +77,11 @@ export class FakeGhlBackend implements GhlBackend {
       return failure;
     }
 
+    const cached = this.idempotencyCache.get(request.idempotencyKey);
+    if (cached) {
+      return cached;
+    }
+
     const ws = this.workspace(request.tenantId);
     const externalRequestId = `ghl_req_${randomUUID()}`;
 
@@ -88,12 +94,14 @@ export class FakeGhlBackend implements GhlBackend {
           : Array.isArray(body['items'])
             ? `ghl_list_${request.action.replace('.', '_')}`
             : `ghl_${request.action.replace('.', '_')}_${randomUUID().slice(0, 8)}`;
-      return {
+      const result: GhlBackendResult = {
         ok: true,
         externalResourceId,
         externalRequestId,
         body: { ...body, id: body['id'] ?? externalResourceId },
       };
+      this.idempotencyCache.set(request.idempotencyKey, result);
+      return result;
     } catch (err) {
       return {
         ok: false,
@@ -313,6 +321,33 @@ export class FakeGhlBackend implements GhlBackend {
         };
         ws.messages.set(id, message);
         return message;
+      }
+
+      case 'conversation.send': {
+        const id = `ghl_msg_${randomUUID().slice(0, 8)}`;
+        const message = {
+          id,
+          contactId: str(payload['contactId']),
+          conversationId: str(payload['conversationId']),
+          body: str(payload['body']) ?? str(payload['message']) ?? '',
+          status: 'sent',
+        };
+        ws.messages.set(id, message);
+        return message;
+      }
+      case 'appointment.create': {
+        const id = `ghl_appt_${randomUUID().slice(0, 8)}`;
+        const appt = normalizeAppointment({
+          id,
+          contactId: str(payload['contactId']),
+          title: str(payload['title']) ?? 'Appointment',
+          startAt: str(payload['startAt']) ?? str(payload['startTime']),
+          endAt: str(payload['endAt']) ?? str(payload['endTime']),
+          status: 'booked',
+          calendarId: str(payload['calendarId']),
+        });
+        ws.appointments.set(id, appt);
+        return { ...appt };
       }
       default: {
         const _exhaustive: never = action;
