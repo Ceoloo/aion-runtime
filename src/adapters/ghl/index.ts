@@ -34,3 +34,13 @@ export {
   MISSION_009_CAPABILITIES,
   type GhlAdapterDeps,
 } from './ghl-adapter.js';
+
+export {
+  GHL_API_VERSION,
+  GHL_API_BASE_URL,
+  CRM_CONTACT_UPSERT_MIN_CONFIDENCE,
+  GHL_DISABLED_ACTIONS,
+  GHL_AMBIGUOUS_WRITE_ERROR_CODES,
+} from './constants.js';
+export { validateGhlPayload, type PayloadValidationError } from './payload-validation.js';
+export { mapGhlHttpError, type MappedProviderError } from './provider-errors.js';
