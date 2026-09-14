@@ -5,6 +5,8 @@
  * can replace this without changing the adapter contract.
  */
 
+import { GHL_API_BASE_URL, GHL_API_VERSION } from './constants.js';
+
 export interface GhlConnection {
   tenantId: string;
   locationId: string;
@@ -38,10 +40,9 @@ export function resolveGhlConnection(
     tenantId: input.tenantId,
     locationId,
     apiKey,
-    apiVersion: (env.GHL_API_VERSION ?? '2021-07-28').trim(),
-    baseUrl: (
-      env.GHL_API_BASE_URL ?? 'https://services.leadconnectorhq.com'
-    ).replace(/\/$/, ''),
+    // Env may override, but fixtures and docs pin GHL_API_VERSION.
+    apiVersion: (env.GHL_API_VERSION ?? GHL_API_VERSION).trim(),
+    baseUrl: (env.GHL_API_BASE_URL ?? GHL_API_BASE_URL).replace(/\/$/, ''),
     source: 'env',
   };
 }

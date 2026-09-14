@@ -2,7 +2,6 @@ import {
   buildExternalIdempotencyKey,
   capability,
   createExternalSideEffect,
-  CRM_CONTACT_UPSERT_MIN_CONFIDENCE,
   formatServiceKey,
   hashExternalResult,
   type Capability,
@@ -12,9 +11,18 @@ import {
   type ExternalSideEffect,
 } from '@aion/core';
 import type { PostgresExternalSideEffectRepository } from '@aion/data';
+import {
+  CRM_CONTACT_UPSERT_MIN_CONFIDENCE,
+  GHL_AMBIGUOUS_WRITE_ERROR_CODES,
+  GHL_API_VERSION,
+  GHL_DISABLED_ACTIONS,
+} from './constants.js';
+import { validateGhlPayload } from './payload-validation.js';
 import type { GhlBackend, GhlMutationKind } from './types.js';
 import { isGhlReadAction } from './types.js';
 import { sharedFakeGhlBackend } from './fake-ghl-backend.js';
+
+export { GHL_API_VERSION, CRM_CONTACT_UPSERT_MIN_CONFIDENCE, GHL_DISABLED_ACTIONS };
 
 const CRM_ACTIONS: Record<string, GhlMutationKind> = {
   'crm.contact.read': 'contact.read',
@@ -27,7 +35,9 @@ const CRM_ACTIONS: Record<string, GhlMutationKind> = {
   'crm.opportunity.update': 'opportunity.update',
   'crm.pipeline.read': 'pipeline.read',
   'crm.conversation.read': 'conversation.read',
+  'crm.conversation.send': 'conversation.send',
   'crm.appointment.read': 'appointment.read',
+  'crm.appointment.create': 'appointment.create',
   'crm.note.create': 'note.create',
   'crm.task.create': 'task.create',
   'crm.message.draft': 'message.draft',
@@ -36,6 +46,7 @@ const CRM_ACTIONS: Record<string, GhlMutationKind> = {
   'client.ghl.contact.upsert': 'contact.update',
 };
 
+/** Enabled lead-workflow capabilities for AIO-17 first slice (+ Phase A reads). */
 export const MISSION_009_CAPABILITIES: Capability[] = [
   capability('crm.contact.read'),
   capability('crm.contact.search'),
@@ -47,7 +58,9 @@ export const MISSION_009_CAPABILITIES: Capability[] = [
   capability('crm.opportunity.update'),
   capability('crm.pipeline.read'),
   capability('crm.conversation.read'),
+  capability('crm.conversation.send'),
   capability('crm.appointment.read'),
+  capability('crm.appointment.create'),
   capability('crm.note.create'),
   capability('crm.task.create'),
   capability('crm.message.draft'),
@@ -60,10 +73,12 @@ export interface GhlAdapterDeps {
 }
 
 /**
- * Governed GHL / CRM adapter.
+ * Governed GHL / CRM adapter (AIO-17 lead-workflow slice).
  *
- * Records every successful mutation in the external side-effect ledger so
- * retries are idempotent. Never called until Runtime policy has ALLOWed.
+ * Records successful mutations in the external side-effect ledger so retries
+ * are idempotent. Ambiguous write timeouts are recorded as failed+ambiguous
+ * and are never auto-repeated. Disabled capabilities return CAPABILITY_DISABLED.
+ * Never called until Runtime policy has ALLOWed.
  */
 export class GhlAdapter implements ExecutionAdapter {
   readonly name = 'ghl-adapter';
@@ -84,6 +99,16 @@ export class GhlAdapter implements ExecutionAdapter {
     const action = CRM_ACTIONS[request.capability];
     if (!action) {
       return fail(this.name, startedAt, 'UNSUPPORTED_CAPABILITY', request.capability);
+    }
+
+    // AIO-17: conversation read/send + appointment create are defined but disabled.
+    if (GHL_DISABLED_ACTIONS.has(action)) {
+      return fail(
+        this.name,
+        startedAt,
+        'CAPABILITY_DISABLED',
+        `capability ${request.capability} (${action}) is defined but disabled in the AIO-17 lead-workflow slice`,
+      );
     }
 
     const tenantId = resolveTenantId(request);
@@ -120,9 +145,11 @@ export class GhlAdapter implements ExecutionAdapter {
         'crm adapters require command.executionId for side-effect attribution',
       );
     }
+
     const payload = {
       ...(request.command.payload ?? {}),
     };
+
     // M004 upsert shape: { provider, contact: { email, ... } }
     if (
       request.capability === 'client.ghl.contact.upsert' &&
@@ -135,18 +162,22 @@ export class GhlAdapter implements ExecutionAdapter {
         payload['email'] = contact['email'];
       }
       if (!payload['contactId'] && typeof contact['email'] === 'string') {
-        payload['contactId'] = `ghl_contact_${String(contact['email']).replace(/[^a-z0-9]/gi, '_')}`;
+        payload['contactId'] =
+          `ghl_contact_${String(contact['email']).replace(/[^a-z0-9]/gi, '_')}`;
       }
       if (!payload['fields']) {
         payload['fields'] = contact;
       }
-      // Legacy upsert path treats known email mapping as high-confidence.
       if (payload['matchConfidence'] === undefined) {
         payload['matchConfidence'] = 1;
       }
     }
 
-    // High-confidence gate for contact create / upsert via update.
+    const payloadError = validateGhlPayload(action, payload);
+    if (payloadError) {
+      return fail(this.name, startedAt, payloadError.code, payloadError.message);
+    }
+
     if (action === 'contact.update') {
       const confidenceGate = assertContactUpsertConfidence(payload);
       if (confidenceGate) {
@@ -154,7 +185,6 @@ export class GhlAdapter implements ExecutionAdapter {
       }
     }
 
-    // Never trust caller-supplied cross-tenant workspace override without match.
     const workspaceId =
       typeof payload['workspaceId'] === 'string' ? payload['workspaceId'] : tenantId;
     if (workspaceId !== tenantId && !workspaceId.startsWith(`${tenantId}:`)) {
@@ -193,6 +223,7 @@ export class GhlAdapter implements ExecutionAdapter {
           externalRequestId: existing.externalRequestId,
           action,
           body: existing.metadata?.['body'] ?? {},
+          apiVersion: GHL_API_VERSION,
         },
         executor: this.name,
         startedAt,
@@ -203,6 +234,49 @@ export class GhlAdapter implements ExecutionAdapter {
           adapter: this.name,
           provider: 'ghl',
           idempotentReplay: true,
+          sideEffectId: existing.sideEffectId,
+          apiVersion: GHL_API_VERSION,
+        },
+      };
+    }
+
+    // Ambiguous prior write: do not automatically repeat the uncertain mutation.
+    if (
+      existing &&
+      existing.status === 'failed' &&
+      (existing.metadata?.['ambiguousWrite'] === true ||
+        (typeof existing.errorCode === 'string' &&
+          GHL_AMBIGUOUS_WRITE_ERROR_CODES.has(existing.errorCode)))
+    ) {
+      return {
+        status: 'failed',
+        output: {
+          provider: 'ghl',
+          backend: this.backend.name,
+          action,
+          errorCode: 'AMBIGUOUS_WRITE_NOT_REPLAYED',
+          errorMessage:
+            'prior write outcome was ambiguous; refusing automatic repeat — operator must decide',
+          retryable: false,
+          sideEffectId: existing.sideEffectId,
+          idempotencyKey,
+          apiVersion: GHL_API_VERSION,
+        },
+        executor: this.name,
+        startedAt,
+        completedAt: new Date().toISOString(),
+        durationMs: 1,
+        cost: { units: 0, tokens: 0 },
+        error: {
+          code: 'AMBIGUOUS_WRITE_NOT_REPLAYED',
+          message:
+            'prior write outcome was ambiguous; refusing automatic repeat — operator must decide',
+          retryable: false,
+        },
+        metadata: {
+          adapter: this.name,
+          provider: 'ghl',
+          ambiguousWrite: true,
           sideEffectId: existing.sideEffectId,
         },
       };
@@ -219,6 +293,32 @@ export class GhlAdapter implements ExecutionAdapter {
     const completedAt = new Date().toISOString();
 
     if (!backendResult.ok) {
+      const ambiguousWrite = GHL_AMBIGUOUS_WRITE_ERROR_CODES.has(backendResult.errorCode);
+      if (ambiguousWrite || !isGhlReadAction(action)) {
+        // Durable failure for ambiguous writes so restart/replay cannot auto-repeat.
+        if (ambiguousWrite) {
+          const effect = createExternalSideEffect({
+            executionId,
+            tenantId,
+            serviceKey,
+            idempotencyKey,
+            requestedAction: action,
+            performedAt: completedAt,
+            status: 'failed',
+            provider: 'ghl',
+            errorCode: backendResult.errorCode,
+            errorMessage: backendResult.errorMessage,
+            metadata: {
+              ambiguousWrite: true,
+              capability: request.capability,
+              backend: this.backend.name,
+              apiVersion: GHL_API_VERSION,
+            },
+          });
+          await this.sideEffects.saveOnce(effect);
+        }
+      }
+
       return {
         status: 'failed',
         output: {
@@ -227,25 +327,26 @@ export class GhlAdapter implements ExecutionAdapter {
           action,
           errorCode: backendResult.errorCode,
           errorMessage: backendResult.errorMessage,
-          retryable: backendResult.retryable ?? false,
+          retryable: ambiguousWrite ? false : (backendResult.retryable ?? false),
+          ambiguousWrite,
+          apiVersion: GHL_API_VERSION,
         },
         executor: this.name,
         startedAt,
         completedAt,
-        durationMs: Math.max(
-          1,
-          Date.parse(completedAt) - Date.parse(startedAt) || 1,
-        ),
+        durationMs: Math.max(1, Date.parse(completedAt) - Date.parse(startedAt) || 1),
         cost: { units: 1, tokens: 10 },
         error: {
           code: backendResult.errorCode,
           message: backendResult.errorMessage,
-          retryable: backendResult.retryable ?? false,
+          retryable: ambiguousWrite ? false : (backendResult.retryable ?? false),
         },
         metadata: {
           adapter: this.name,
           provider: 'ghl',
           externalFailure: true,
+          ambiguousWrite,
+          apiVersion: GHL_API_VERSION,
         },
       };
     }
@@ -273,11 +374,49 @@ export class GhlAdapter implements ExecutionAdapter {
         body: backendResult.body,
         capability: request.capability,
         backend: this.backend.name,
+        apiVersion: GHL_API_VERSION,
       },
     });
 
     const saved = await this.sideEffects.saveOnce(effect);
     const recorded: ExternalSideEffect = saved.effect;
+
+    // Concurrent duplicate: another writer won the ledger race after we called the
+    // backend — return the durable winner as an idempotent replay (no second success).
+    if (
+      !saved.inserted &&
+      (recorded.status === 'succeeded' || recorded.status === 'replayed')
+    ) {
+      return {
+        status: 'succeeded',
+        output: {
+          provider: 'ghl',
+          backend: this.backend.name,
+          idempotentReplay: true,
+          concurrentDeduped: true,
+          sideEffectId: recorded.sideEffectId,
+          idempotencyKey: recorded.idempotencyKey,
+          externalResourceId: recorded.externalResourceId,
+          externalRequestId: recorded.externalRequestId,
+          action,
+          body: recorded.metadata?.['body'] ?? backendResult.body,
+          resultHash: recorded.resultHash ?? resultHash,
+          apiVersion: GHL_API_VERSION,
+        },
+        executor: this.name,
+        startedAt,
+        completedAt,
+        durationMs: Math.max(1, Date.parse(completedAt) - Date.parse(startedAt) || 1),
+        cost: { units: 0, tokens: 0 },
+        metadata: {
+          adapter: this.name,
+          provider: 'ghl',
+          idempotentReplay: true,
+          concurrentDeduped: true,
+          sideEffectId: recorded.sideEffectId,
+        },
+      };
+    }
 
     const legacyContact =
       request.capability === 'client.ghl.contact.upsert' &&
@@ -312,6 +451,7 @@ export class GhlAdapter implements ExecutionAdapter {
         action,
         body: backendResult.body,
         resultHash,
+        apiVersion: GHL_API_VERSION,
         ...(legacyContact ? { contact: legacyContact } : {}),
       },
       executor: this.name,
@@ -324,6 +464,7 @@ export class GhlAdapter implements ExecutionAdapter {
         provider: 'ghl',
         sideEffectId: recorded.sideEffectId,
         externalResourceId: recorded.externalResourceId,
+        apiVersion: GHL_API_VERSION,
       },
     };
   }
@@ -408,13 +549,13 @@ function fail(
   const completedAt = new Date().toISOString();
   return {
     status: 'failed',
-    output: { errorCode: code, errorMessage: message },
+    output: { errorCode: code, errorMessage: message, apiVersion: GHL_API_VERSION },
     executor,
     startedAt,
     completedAt,
     durationMs: 1,
     cost: { units: 0 },
     error: { code, message, retryable: false },
-    metadata: { adapter: executor, provider: 'ghl' },
+    metadata: { adapter: executor, provider: 'ghl', apiVersion: GHL_API_VERSION },
   };
 }
