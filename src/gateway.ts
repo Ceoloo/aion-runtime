@@ -132,6 +132,11 @@ import {
   resolveDurableActor,
   resolveApproverActor,
 } from './auth/resolve-actor.js';
+import {
+  attachAgentTrustScore,
+  isTerminalExecutionStatus,
+  persistExecutionWithTrustScore,
+} from './trust-score.js';
 
 /** Per-request principal bound at the gateway identity boundary. */
 const principalContext = new AsyncLocalStorage<Principal | null>();
@@ -746,11 +751,21 @@ async function submitCommand(
         },
       });
       // Force status denied (createExecutionObject maps from run.state already).
-      await cp.dataLayer.executions.save(deniedExe);
+      const deniedScored = await persistExecutionWithTrustScore(
+        (e) => cp.dataLayer.executions.save(e),
+        (id) => cp.dataLayer.evaluations?.getByExecutionId?.(id as never),
+        {
+          execution: deniedExe,
+          agent,
+          authorizeDecision: 'DENY',
+          policyDecision: authz,
+          computedAt: now,
+        },
+      );
       logger.info('gateway_authorization_denied', {
         operation: 'POST /v1/commands',
         run_id: deniedRun.runId,
-        execution_id: deniedExe.executionId,
+        execution_id: deniedScored.executionId,
         reason: authz.reason,
       });
       return {
@@ -760,7 +775,7 @@ async function submitCommand(
           error: 'authorization_denied',
           message: authz.reason,
           run: deniedRun,
-          execution: deniedExe,
+          execution: deniedScored,
           decision: { decision: 'DENY', reason: authz.reason },
         },
       };
@@ -957,12 +972,32 @@ async function submitCommand(
       ...(outcomeSummary !== undefined ? { outcomeSummary } : {}),
       ...(seededOutcome ? { outcomeId: seededOutcome.outcomeId as never } : {}),
     });
-    await cp.dataLayer.executions.save(execution);
+    const persisted = await persistExecutionWithTrustScore(
+      (e) => cp.dataLayer.executions.save(e),
+      (id) => cp.dataLayer.evaluations?.getByExecutionId?.(id as never),
+      {
+        execution,
+        agent,
+        authorizeDecision:
+          result.status === 'denied'
+            ? 'DENY'
+            : result.status === 'awaiting_approval'
+              ? 'REQUIRE_APPROVAL'
+              : 'ALLOW',
+        gateRequired: result.status === 'awaiting_approval',
+        ...(seededOutcome
+          ? {
+              outcomeStatus:
+                result.status === 'failed' ? ('failed' as const) : ('pending' as const),
+            }
+          : {}),
+      },
+    );
 
     logger.info('gateway_command_submitted', {
       operation: 'POST /v1/commands',
       run_id: result.run.runId,
-      execution_id: execution.executionId,
+      execution_id: persisted.executionId,
       status: result.status,
       ...(seededOutcome ? { outcome_id: seededOutcome.outcomeId } : {}),
       ...(catalogServiceKey ? { service_key: catalogServiceKey } : {}),
@@ -976,7 +1011,7 @@ async function submitCommand(
       body: {
         status: result.status,
         run: result.run,
-        execution,
+        execution: persisted,
         decision: result.decision,
         ...(result.result ? { result: result.result } : {}),
         ...(result.approval ? { approval: result.approval } : {}),
@@ -1121,15 +1156,27 @@ async function decideApproval(
         : []),
     ],
   });
-  await cp.dataLayer.executions.save(execution);
+  const persisted = await persistExecutionWithTrustScore(
+    (e) => cp.dataLayer.executions.save(e),
+    (id) => cp.dataLayer.evaluations?.getByExecutionId?.(id as never),
+    {
+      execution,
+      agent,
+      authorizeDecision: result.status === 'denied' ? 'DENY' : 'ALLOW',
+      gateRequired: true,
+      approvalGranted: parsed.data.approve === true,
+      approvalByHuman: true,
+      computedAt: result.run.updatedAt,
+    },
+  );
 
   logger.info('gateway_approval_decided', {
     operation: 'POST /v1/approvals/:id/decision',
     approval_id: approvalId,
     run_id: result.run.runId,
-    execution_id: execution.executionId,
+    execution_id: persisted.executionId,
     status: result.status,
-    ...(execution.outcomeId ? { outcome_id: execution.outcomeId } : {}),
+    ...(persisted.outcomeId ? { outcome_id: persisted.outcomeId } : {}),
   });
 
   return {
@@ -1137,7 +1184,7 @@ async function decideApproval(
     body: {
       status: result.status,
       run: result.run,
-      execution,
+      execution: persisted,
       decision: result.decision,
       ...(result.result ? { result: result.result } : {}),
       ...(seededOutcome
@@ -1592,6 +1639,36 @@ async function createEvaluation(
     );
   }
   await cp.dataLayer.evaluations.save(evaluation);
+
+  // Recompute Trust Score when evaluation arrives after a terminal execution.
+  const linked = await cp.dataLayer.executions.get(evaluation.executionId);
+  if (linked && isTerminalExecutionStatus(linked.status)) {
+    const actor = linked.actorId
+      ? await cp.dataLayer.actors.get(linked.actorId)
+      : undefined;
+    const agent = actor?.actorType === 'agent' ? actor : undefined;
+    const scored = attachAgentTrustScore({
+      execution: linked,
+      agent,
+      evaluation,
+      authorizeDecision:
+        linked.status === 'denied'
+          ? 'DENY'
+          : linked.status === 'awaiting_approval'
+            ? 'REQUIRE_APPROVAL'
+            : 'ALLOW',
+    });
+    await cp.dataLayer.executions.save(scored);
+    return {
+      status: 201,
+      body: {
+        evaluation,
+        execution: scored,
+        agentTrustScore: scored.metadata['agentTrustScore'],
+      },
+    };
+  }
+
   return { status: 201, body: { evaluation } };
 }
 
@@ -2300,18 +2377,33 @@ async function runMission(
       projectId: agent?.projectId,
       auditTrace: existing?.auditTrace,
     });
-    await cp.dataLayer.executions.save(execution);
+    const persisted = await persistExecutionWithTrustScore(
+      (e) => cp.dataLayer.executions.save(e),
+      (id) => cp.dataLayer.evaluations?.getByExecutionId?.(id as never),
+      {
+        execution,
+        agent,
+        authorizeDecision:
+          step.status === 'denied'
+            ? 'DENY'
+            : step.status === 'awaiting_approval'
+              ? 'REQUIRE_APPROVAL'
+              : 'ALLOW',
+        gateRequired: step.status === 'awaiting_approval',
+      },
+    );
     persistedSteps.push({
       stepIndex: step.stepIndex,
       stepName: step.step.name,
       capability: step.step.capability,
       status: step.status,
-      executionId: step.executionId,
+      executionId: persisted.executionId,
       parentExecutionId: step.parentExecutionId ?? null,
       rootExecutionId: step.rootExecutionId,
       runId: step.orchestration.run.runId,
       approvalId: step.orchestration.approval?.approvalId ?? null,
       result: step.orchestration.result ?? null,
+      agentTrustScore: persisted.metadata?.['agentTrustScore'] ?? null,
     });
   }
 
