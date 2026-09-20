@@ -1,0 +1,23 @@
+{
+  "_comment": "Known PRODUCTION identifiers, stored only as SHA-256 (hex of the exact id string) so this public repo can reject them without publishing them.",
+  "tenants": [
+    "aion-systems",
+    "aion-media"
+  ],
+  "runtimeHosts": [
+    "runtime.srv1655818.hstgr.cloud",
+    "runtime.aionsystems.ai",
+    "copilot.aionsystems.ai"
+  ],
+  "sha256": {
+    "ghlLocationIds": [
+      "82f52008476356a8315f935996cb4b7529c766823acf7a8b6a42b995ed52459f"
+    ],
+    "ghlRecordIds": [
+      "51b6c4c1a93b12306bdd1c33f652460c1917e7c91ce75aa811af65682a8da4b4",
+      "a039c1ec9f433c0cc7e990e6159b3824f6ddfc116e2ec64da185864a3735d39e",
+      "ab751547162e82975bcdfa892cded02afa21e1f758d07fc82f6fc88d2309f5ad",
+      "cdfa9019ea6a704d8e098d6a1ff8afe93187d2f328b8973857d485cf066992ef"
+    ]
+  }
+}

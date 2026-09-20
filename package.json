@@ -2,7 +2,7 @@
   "name": "@aion/runtime",
   "version": "0.1.0",
   "private": true,
-  "description": "AION runtime host \u2014 the platform composition root. Boots AION Core over AION Data's durable Postgres adapters, exposes health/readiness, runs migrations, emits structured logs, and builds the one provider-neutral container image every deployment profile runs. Established by aion-docs ADR-002.",
+  "description": "AION runtime host — the platform composition root. Boots AION Core over AION Data's durable Postgres adapters, exposes health/readiness, runs migrations, emits structured logs, and builds the one provider-neutral container image every deployment profile runs. Established by aion-docs ADR-002.",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
@@ -32,13 +32,14 @@
     "test:aio17-ghl-fixtures": "npm run build && node --test dist/adapters/ghl/aio17-contract.fixtures.test.js",
     "proof:aio17-ghl-lead-workflow": "bash scripts/aio17-ghl-lead-workflow-proof.sh",
     "proof:revenue-workflow": "bash scripts/revenue-workflow-durable-proof.sh",
-    "proof:ghl-live-capability": "node dist/ghl-live-capability-proof.js",
+    "proof:ghl-live-capability": "node scripts/lib/proof-guard.mjs --mode live-capability && node dist/ghl-live-capability-proof.js",
     "proof:ie002": "bash scripts/ie002-proof-matrix.sh",
     "test:outcomes-sessions": "npm run build && node --test dist/outcomes-sessions-gateway.test.js",
     "test:submit-concurrency": "npm run build && node --test dist/commands-submit-concurrency.test.js",
     "test:identity": "npm run build && node --test dist/auth/identity-plane.test.js",
     "test:trust-score": "npm run build && node --test dist/trust-score.test.js",
-    "test:gateway": "npm run build && node --test dist/outcomes-sessions-gateway.test.js dist/commands-submit-concurrency.test.js dist/auth/identity-plane.test.js dist/trust-score.test.js"
+    "test:gateway": "npm run build && node --test dist/outcomes-sessions-gateway.test.js dist/commands-submit-concurrency.test.js dist/auth/identity-plane.test.js dist/trust-score.test.js",
+    "test:proof-safety": "npm run build && node --test dist/adapters/ghl/backend-selection.test.js scripts/lib/proof-guard.test.mjs"
   },
   "dependencies": {
     "@aion/core": "file:vendor/aion-core",

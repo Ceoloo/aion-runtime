@@ -20,19 +20,22 @@ import {
 } from '@aion/core';
 import { RuntimeClient } from './clients/runtime-client.js';
 
-const BASE_URL =
-  process.env.AION_RUNTIME_URL ?? 'https://runtime.srv1655818.hstgr.cloud';
-const TENANT = process.env.GHL_ACCEPTANCE_TENANT ?? 'aion-systems';
-const CONTACT_ID =
-  process.env.GHL_ACCEPTANCE_CONTACT_ID ?? 'MyWCgeFaKnifp6LM7yIc';
-const OPP_ID =
-  process.env.GHL_ACCEPTANCE_OPPORTUNITY_ID ?? 'rGbIyrAvGDcmMEzjBER4';
-const PRIOR_STAGE =
-  process.env.GHL_ACCEPTANCE_PRIOR_STAGE ??
-  'fdd0844f-4260-4522-a8f3-87d361dfb5fa';
-const TARGET_STAGE =
-  process.env.GHL_ACCEPTANCE_TARGET_STAGE ??
-  '691415a9-30fd-4977-b1ec-fdc4efbd85fc';
+
+/** Required env: no defaults, so a proof can never fall back to a production tenant, runtime or record. */
+function requiredEnv(name: string): string {
+  const v = process.env[name]?.trim();
+  if (!v) {
+    console.error(`[proof] ${name} must be set explicitly (no default)`);
+    process.exit(3);
+  }
+  return v;
+}
+const BASE_URL = requiredEnv('AION_RUNTIME_URL');
+const TENANT = requiredEnv('GHL_ACCEPTANCE_TENANT');
+const CONTACT_ID = requiredEnv('GHL_ACCEPTANCE_CONTACT_ID');
+const OPP_ID = requiredEnv('GHL_ACCEPTANCE_OPPORTUNITY_ID');
+const PRIOR_STAGE = requiredEnv('GHL_ACCEPTANCE_PRIOR_STAGE');
+const TARGET_STAGE = requiredEnv('GHL_ACCEPTANCE_TARGET_STAGE');
 
 const PERMS = [
   'crm.contact.read',
@@ -107,7 +110,7 @@ function evidenceFromCommand(
           : 0;
   return {
     tenant: TENANT,
-    location_id: process.env.GHL_LOCATION_ID ?? 'YK8RT5OnmQiMqprlyqYY',
+    location_id: process.env.GHL_LOCATION_ID ?? '(runtime-env)',
     capability: capabilityName,
     request_id: res.run?.runId,
     execution_id: res.execution?.executionId,

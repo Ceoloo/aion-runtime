@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Mission 003 tenant/domain isolation attack suite.
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/proof-env.sh" fake
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 

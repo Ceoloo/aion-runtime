@@ -17,6 +17,10 @@ jobs:
   verify:
     name: typecheck · build · portability · acceptance · mission001-proof · mission002-proof · mission003-proof · mission004-proof · mission005-proof · mission006-proof · mission007-proof · mission008-proof · mission009-proof · revenue-workflow-proof · ie002-proof · platform-v01-cert
     runs-on: ubuntu-latest
+    env:
+      # CI's service DB is ephemeral and earlier proofs populate it. Honored ONLY when GITHUB_ACTIONS=true and it
+      # skips only the 'non-proof rows' check — production markers, GHL/production refusals always apply.
+      AION_PROOF_DB_DISPOSABLE: '1'
     services:
       postgres:
         image: postgres:16-alpine
@@ -50,6 +54,11 @@ jobs:
 
       - name: Portability check
         run: npm run portability-check
+
+      - name: Proof safety (guard + explicit GHL backend selection fail closed)
+        env:
+          PROOF_GUARD_TEST_PG: postgresql://postgres:postgres@localhost:5432/postgres
+        run: npm run test:proof-safety
 
       - name: Provision least-privilege roles
         env:
@@ -148,7 +157,6 @@ jobs:
 
       - name: Durable revenue workflow proof (Lead→Opp→Note/Task→gate→outcome)
         env:
-          AION_PROOF_DB_DISPOSABLE: '1' # CI service DB is ephemeral and already populated by earlier proofs
           MIGRATION_DATABASE_URL: postgresql://aion_migrator:ci_migrator@localhost:5432/aion_data
           DATABASE_URL: postgresql://aion_app:ci_app@localhost:5432/aion_data
           DATABASE_SSL: 'false'

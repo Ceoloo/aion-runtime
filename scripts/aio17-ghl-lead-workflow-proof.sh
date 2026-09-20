@@ -9,6 +9,7 @@
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/proof-env.sh" fake
 
 echo "[aio17] build"
 npm run build >/dev/null
