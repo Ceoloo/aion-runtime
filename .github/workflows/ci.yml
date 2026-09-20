@@ -148,6 +148,7 @@ jobs:
 
       - name: Durable revenue workflow proof (Lead→Opp→Note/Task→gate→outcome)
         env:
+          AION_PROOF_DB_DISPOSABLE: '1' # CI service DB is ephemeral and already populated by earlier proofs
           MIGRATION_DATABASE_URL: postgresql://aion_migrator:ci_migrator@localhost:5432/aion_data
           DATABASE_URL: postgresql://aion_app:ci_app@localhost:5432/aion_data
           DATABASE_SSL: 'false'

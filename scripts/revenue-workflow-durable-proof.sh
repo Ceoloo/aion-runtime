@@ -23,6 +23,9 @@ export AION_RUNTIME_URL="http://127.0.0.1:${PORT}"
 HANDOFF="${ROOT}/.proof-rw-handoff.json"
 export RW_HANDOFF_PATH="$HANDOFF"
 
+echo "[proof-rw] safety guard (disposable DB only, no live GHL)"
+node scripts/lib/proof-guard.mjs
+
 echo "[proof-rw] build"
 npm run build >/dev/null 2>&1
 mkdir -p dist/sql
