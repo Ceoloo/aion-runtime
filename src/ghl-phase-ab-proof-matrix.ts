@@ -140,23 +140,57 @@ async function main(): Promise<void> {
   }
 
   // ── A3: opportunities + conversations + appointments ────────────────────
-  for (const [pass, key, payload] of [
-    ['A3a', 'crm.opportunity.search', {}],
-    ['A3b', 'crm.conversation.read', { contactId: 'ghl_contact_seed' }],
-    ['A3c', 'crm.appointment.read', { contactId: 'ghl_contact_seed' }],
-  ] as const) {
+  // A3a opportunities (enabled)
+  {
     const res = (await client.submitCommand({
-      name: `ghl-${pass}`,
+      name: 'ghl-A3a',
       actor: primary,
       requestId: newRequestId(),
-      serviceKey: formatServiceKey(key, 1),
-      payload,
+      serviceKey: formatServiceKey('crm.opportunity.search', 1),
+      payload: {},
       metadata: { tenantId: TENANT, proof: 'ghl-phase-a' },
     })) as CommandResponse;
     if (!succeeded(res)) {
-      fail(pass, `${key} failed: ${JSON.stringify(res).slice(0, 400)}`);
+      fail('A3a', `opportunity.search failed: ${JSON.stringify(res).slice(0, 400)}`);
     }
-    ok(pass, `${key} ok`);
+    ok('A3a', 'crm.opportunity.search ok');
+  }
+
+  // A3b conversation.read — AIO-17 disabled capability
+  {
+    const res = (await client.submitCommand({
+      name: 'ghl-A3b',
+      actor: primary,
+      requestId: newRequestId(),
+      serviceKey: formatServiceKey('crm.conversation.read', 1),
+      payload: { contactId: 'ghl_contact_seed' },
+      metadata: { tenantId: TENANT, proof: 'ghl-phase-a' },
+    })) as CommandResponse;
+    const code =
+      res.result?.error?.code ?? String(res.result?.output?.['errorCode'] ?? '');
+    if (succeeded(res) || code !== 'CAPABILITY_DISABLED') {
+      fail(
+        'A3b',
+        `expected CAPABILITY_DISABLED for conversation.read, got ${JSON.stringify(res).slice(0, 400)}`,
+      );
+    }
+    ok('A3b', 'crm.conversation.read returns CAPABILITY_DISABLED (AIO-17)');
+  }
+
+  // A3c appointments read (enabled)
+  {
+    const res = (await client.submitCommand({
+      name: 'ghl-A3c',
+      actor: primary,
+      requestId: newRequestId(),
+      serviceKey: formatServiceKey('crm.appointment.read', 1),
+      payload: { contactId: 'ghl_contact_seed' },
+      metadata: { tenantId: TENANT, proof: 'ghl-phase-a' },
+    })) as CommandResponse;
+    if (!succeeded(res)) {
+      fail('A3c', `appointment.read failed: ${JSON.stringify(res).slice(0, 400)}`);
+    }
+    ok('A3c', 'crm.appointment.read ok');
   }
 
   // ── A4: tenant isolation (foreign workspaceId) ──────────────────────────

@@ -29,6 +29,8 @@
     "proof:mission009": "bash scripts/mission009-proof-matrix.sh",
     "proof:ghl-phase-ab": "bash scripts/ghl-phase-ab-proof-matrix.sh",
     "proof:ghl-live-acceptance": "bash scripts/ghl-live-acceptance.sh",
+    "test:aio17-ghl-fixtures": "npm run build && node --test dist/adapters/ghl/aio17-contract.fixtures.test.js",
+    "proof:aio17-ghl-lead-workflow": "bash scripts/aio17-ghl-lead-workflow-proof.sh",
     "proof:ghl-live-capability": "node dist/ghl-live-capability-proof.js",
     "proof:ie002": "bash scripts/ie002-proof-matrix.sh",
     "test:outcomes-sessions": "npm run build && node --test dist/outcomes-sessions-gateway.test.js",

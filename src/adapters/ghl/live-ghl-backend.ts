@@ -17,6 +17,8 @@ import {
   normalizeOpportunity,
   normalizePipeline,
 } from './normalize.js';
+import { mapGhlHttpError } from './provider-errors.js';
+import { GHL_API_VERSION } from './constants.js';
 
 export type FetchLike = (
   url: string,
@@ -417,6 +419,48 @@ export class LiveGhlBackend implements GhlBackend {
           status: 'sent',
         });
       }
+
+      case 'conversation.send': {
+        // Disabled at adapter; live path kept for contract completeness.
+        const contactId = str(payload['contactId']);
+        if (!contactId) return fail('GHL_BAD_REQUEST', 'contactId required');
+        const data = await this.api(connection, 'POST', '/conversations/messages', {
+          type: str(payload['channel']) ?? 'SMS',
+          contactId,
+          message: str(payload['body']) ?? str(payload['message']) ?? '',
+        });
+        if (!data.ok) return data;
+        const msg = asRecord(data.body);
+        const id = String(msg['messageId'] ?? msg['id'] ?? `ghl_msg_${randomUUID().slice(0, 8)}`);
+        return ok(id, data.externalRequestId, {
+          id,
+          contactId,
+          body: str(payload['body']) ?? '',
+          status: 'sent',
+          apiVersion: GHL_API_VERSION,
+        });
+      }
+      case 'appointment.create': {
+        const contactId = str(payload['contactId']);
+        if (!contactId) return fail('GHL_BAD_REQUEST', 'contactId required');
+        const startAt = str(payload['startAt']) ?? str(payload['startTime']);
+        if (!startAt) return fail('GHL_BAD_REQUEST', 'startAt required');
+        const body = {
+          locationId: connection.locationId,
+          contactId,
+          title: str(payload['title']) ?? 'Appointment',
+          startTime: startAt,
+          endTime: str(payload['endAt']) ?? str(payload['endTime']),
+          calendarId: str(payload['calendarId']),
+        };
+        const data = await this.api(connection, 'POST', '/calendars/events', body);
+        if (!data.ok) return data;
+        const appt = normalizeAppointment(asRecord(asRecord(data.body)['event'] ?? asRecord(data.body)['appointment'] ?? data.body));
+        return ok(appt.id || `ghl_appt_${randomUUID().slice(0, 8)}`, data.externalRequestId, {
+          ...(appt as unknown as Record<string, unknown>),
+          apiVersion: GHL_API_VERSION,
+        });
+      }
       default: {
         const _exhaustive: never = action;
         return fail('GHL_UNSUPPORTED', `unsupported action: ${_exhaustive}`);
@@ -452,13 +496,12 @@ export class LiveGhlBackend implements GhlBackend {
       } catch {
         detail = '';
       }
+      const mapped = mapGhlHttpError(resp.status, detail);
       return {
         ok: false,
-        errorCode: `GHL_HTTP_${resp.status}`,
-        errorMessage: detail
-          ? `ghl_http_error status=${resp.status} body=${detail}`
-          : `ghl_http_error status=${resp.status}`,
-        retryable: resp.status === 429 || resp.status >= 500,
+        errorCode: mapped.errorCode,
+        errorMessage: mapped.errorMessage,
+        retryable: mapped.retryable,
       };
     }
     let parsed: unknown = {};
