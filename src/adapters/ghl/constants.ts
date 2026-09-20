@@ -17,9 +17,10 @@ export const GHL_API_BASE_URL = 'https://services.leadconnectorhq.com';
 export const CRM_CONTACT_UPSERT_MIN_CONFIDENCE = 0.85;
 
 /**
- * AIO-17 first lead-workflow slice: these actions are defined (fixtures +
- * validation + error mapping) but not executable yet. Calls return
- * `CAPABILITY_DISABLED`. Remaining enablement is a follow-up to AIO-17.
+ * Deferred from the enabled CRM revenue slice (AIO-17 complete under that
+ * wording). Includes conversation **reads** (not only send) and appointment
+ * create. Calls return `CAPABILITY_DISABLED` with zero provider I/O.
+ * Live acceptance is tracked separately from this constant set.
  */
 export const GHL_DISABLED_ACTIONS: ReadonlySet<string> = new Set([
   'conversation.read',

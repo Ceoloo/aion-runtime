@@ -141,10 +141,12 @@ describe('AIO-17 disabled capability fixtures', () => {
   });
 
   it('returns CAPABILITY_DISABLED for conversation.read/send and appointment.create', async () => {
+    const backend = new FakeGhlBackend();
     const adapter = new GhlAdapter({
       sideEffects: new MemorySideEffects() as never,
-      backend: new FakeGhlBackend(),
+      backend,
     });
+    const before = backend.mutationCount('tenant-a');
 
     for (const [cap, payload] of [
       ['crm.conversation.read', { contactId: 'ghl_contact_seed' }],
@@ -162,6 +164,11 @@ describe('AIO-17 disabled capability fixtures', () => {
       assert.equal(result.status, 'failed', cap);
       assert.equal(result.error?.code, 'CAPABILITY_DISABLED', cap);
     }
+    assert.equal(
+      backend.mutationCount('tenant-a'),
+      before,
+      'deferred capabilities must make zero provider calls',
+    );
   });
 });
 
@@ -304,6 +311,8 @@ describe('AIO-17 enabled lead-workflow slice (in-process)', () => {
 
     // Concurrent duplicate execution
     const key = 'aio17-concurrent-note';
+    const mutationsBefore = backend.mutationCount('tenant-a');
+    const notesBefore = backend.noteCount('tenant-a');
     const [a, b] = await Promise.all([
       adapter.execute(
         request('crm.note.create', {
@@ -325,6 +334,23 @@ describe('AIO-17 enabled lead-workflow slice (in-process)', () => {
     assert.equal(
       (a.output as Record<string, unknown>)['sideEffectId'],
       (b.output as Record<string, unknown>)['sideEffectId'],
+    );
+    const resourceA = String(
+      (a.output as Record<string, unknown>)['externalResourceId'] ?? '',
+    );
+    const resourceB = String(
+      (b.output as Record<string, unknown>)['externalResourceId'] ?? '',
+    );
+    assert.equal(resourceA, resourceB);
+    assert.equal(
+      backend.mutationCount('tenant-a') - mutationsBefore,
+      1,
+      'concurrent duplicate must produce exactly one provider write',
+    );
+    assert.equal(
+      backend.noteCount('tenant-a') - notesBefore,
+      1,
+      'concurrent duplicate must produce exactly one note object',
     );
 
     const ik = buildExternalIdempotencyKey({

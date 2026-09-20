@@ -50,6 +50,18 @@ export class FakeGhlBackend implements GhlBackend {
     return this.workspace(tenantId).mutationCount;
   }
 
+  noteCount(tenantId: string): number {
+    return this.workspace(tenantId).notes.size;
+  }
+
+  taskCount(tenantId: string): number {
+    return this.workspace(tenantId).tasks.size;
+  }
+
+  opportunityCount(tenantId: string): number {
+    return this.workspace(tenantId).opportunities.size;
+  }
+
   injectFailure(failure: GhlBackendFailure): void {
     this.nextFailure = failure;
   }
@@ -98,7 +110,11 @@ export class FakeGhlBackend implements GhlBackend {
         ok: true,
         externalResourceId,
         externalRequestId,
-        body: { ...body, id: body['id'] ?? externalResourceId },
+        body: {
+          ...body,
+          id: body['id'] ?? externalResourceId,
+          providerMutationCount: ws.mutationCount,
+        },
       };
       this.idempotencyCache.set(request.idempotencyKey, result);
       return result;
