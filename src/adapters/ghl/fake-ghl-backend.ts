@@ -393,7 +393,7 @@ function seedWorkspace(ws: Workspace, tenantId: string): void {
       ],
     }),
   );
-  const oppId = 'ghl_opp_seed';
+  const oppId = 'fixture_opportunity_0001';
   ws.opportunities.set(
     oppId,
     normalizeOpportunity({

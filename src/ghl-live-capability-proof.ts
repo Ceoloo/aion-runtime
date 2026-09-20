@@ -20,19 +20,22 @@ import {
 } from '@aion/core';
 import { RuntimeClient } from './clients/runtime-client.js';
 
-const BASE_URL =
-  process.env.AION_RUNTIME_URL ?? 'https://runtime.srv1655818.hstgr.cloud';
-const TENANT = process.env.GHL_ACCEPTANCE_TENANT ?? 'aion-systems';
-const CONTACT_ID =
-  process.env.GHL_ACCEPTANCE_CONTACT_ID ?? 'MyWCgeFaKnifp6LM7yIc';
-const OPP_ID =
-  process.env.GHL_ACCEPTANCE_OPPORTUNITY_ID ?? 'rGbIyrAvGDcmMEzjBER4';
-const PRIOR_STAGE =
-  process.env.GHL_ACCEPTANCE_PRIOR_STAGE ??
-  'fdd0844f-4260-4522-a8f3-87d361dfb5fa';
-const TARGET_STAGE =
-  process.env.GHL_ACCEPTANCE_TARGET_STAGE ??
-  '691415a9-30fd-4977-b1ec-fdc4efbd85fc';
+
+/** Required env: no defaults, so a proof can never fall back to a production tenant, runtime or record. */
+function requiredEnv(name: string): string {
+  const v = process.env[name]?.trim();
+  if (!v) {
+    console.error(`[proof] ${name} must be set explicitly (no default)`);
+    process.exit(3);
+  }
+  return v;
+}
+const BASE_URL = requiredEnv('AION_RUNTIME_URL');
+const TENANT = requiredEnv('GHL_ACCEPTANCE_TENANT');
+const CONTACT_ID = requiredEnv('GHL_ACCEPTANCE_CONTACT_ID');
+const OPP_ID = requiredEnv('GHL_ACCEPTANCE_OPPORTUNITY_ID');
+const PRIOR_STAGE = requiredEnv('GHL_ACCEPTANCE_PRIOR_STAGE');
+const TARGET_STAGE = requiredEnv('GHL_ACCEPTANCE_TARGET_STAGE');
 
 const PERMS = [
   'crm.contact.read',
@@ -107,7 +110,7 @@ function evidenceFromCommand(
           : 0;
   return {
     tenant: TENANT,
-    location_id: process.env.GHL_LOCATION_ID ?? 'YK8RT5OnmQiMqprlyqYY',
+    location_id: process.env.GHL_LOCATION_ID ?? '(runtime-env)',
     capability: capabilityName,
     request_id: res.run?.runId,
     execution_id: res.execution?.executionId,
@@ -160,7 +163,7 @@ async function modelStructuredCall(): Promise<Evidence> {
   const system = `You classify CRM leads. Reply with ONLY compact JSON:
 {"decision":"qualified"|"nurture"|"disqualified","confidence":0-1,"rationale":"short"}`;
   const user =
-    'Classify this lead as qualified / nurture / disqualified. Lead: Annfiera McPherson, ModernRelx, tags follow-up/high priority/warm lead, open opportunity in Negotiation.';
+    'Classify this lead as qualified / nurture / disqualified. Lead: Sample Lead, Example Client, tags follow-up/high priority/warm lead, open opportunity in Negotiation.';
 
   const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
@@ -248,7 +251,7 @@ async function main(): Promise<void> {
   // ── 1. Live GHL reads ───────────────────────────────────────────────────
   const readEvidence: Evidence[] = [];
   const reads: Array<[string, string, Record<string, unknown>]> = [
-    ['G1a', 'crm.contact.search@1', { query: 'annfiera' }],
+    ['G1a', 'crm.contact.search@1', { query: 'sample' }],
     ['G1b', 'crm.contact.read@1', { contactId: CONTACT_ID }],
     ['G1c', 'crm.opportunity.search@1', {}],
     ['G1d', 'crm.opportunity.read@1', { opportunityId: OPP_ID }],
