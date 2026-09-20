@@ -51,6 +51,8 @@ function main() {
   if (!existsSync(resolve(coreDir, 'dist', 'index.js'))) {
     rmSync(coreDir, { recursive: true, force: true });
     run(`git clone --quiet ${CORE_REPO} "${coreDir}"`, vendor);
+    // Pin may not be on the default branch tip — fetch the SHA explicitly.
+    run(`git fetch --quiet origin ${CORE_REF}`, coreDir);
     run(`git checkout --quiet ${CORE_REF}`, coreDir);
     run('npm install --no-audit --no-fund --loglevel=error', coreDir);
     run('npm run build', coreDir);
@@ -60,6 +62,7 @@ function main() {
   if (!existsSync(resolve(dataDir, 'dist', 'index.js'))) {
     rmSync(dataDir, { recursive: true, force: true });
     run(`git clone --quiet ${DATA_REPO} "${dataDir}"`, vendor);
+    run(`git fetch --quiet origin ${DATA_REF}`, dataDir);
     run(`git checkout --quiet ${DATA_REF}`, dataDir);
     // Bridge revenue_sessions (aion-data#19 on main) onto EO pin as 0011.
     run(`node "${resolve(root, 'scripts/vendor-revenue-sessions.mjs')}"`, root);
