@@ -74,7 +74,7 @@ test('proof context with explicit fake works and never touches the live backend'
 });
 
 // ── startup: loadConfig fails fast with the clean config_invalid path ─────────────────────────────────────────
-const BASE = { DATABASE_URL: 'postgresql://u:p@localhost:5432/d', AION_AUTH_MODE: 'open', DATABASE_SSL: 'false' };
+const BASE = { DATABASE_URL: 'postgresql://u:p@db.example.invalid:5432/d', AION_AUTH_MODE: 'open', DATABASE_SSL: 'false' };
 test('loadConfig: production + credentials starts and reports crmBackend=live', () => {
   const c = loadConfig(env(BASE, PROD, CREDS));
   assert.deepEqual([c.crmBackend.kind, c.crmBackend.source], ['live', 'inferred_credentials']);
