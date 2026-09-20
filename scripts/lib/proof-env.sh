@@ -6,6 +6,8 @@
 _proof_mode="${1:-fake}"
 _proof_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 node "${_proof_lib}/proof-guard.mjs" --mode "${_proof_mode}" || exit 3
+# Live modes: prove the credential is isolated to the designated test location (read-only probes) before anything runs.
+case "${_proof_mode}" in live-*) node "${_proof_lib}/proof-credential-scope.mjs" || exit 3 ;; esac
 export AION_PROOF=1
 [ "${_proof_mode}" = fake ] && export GHL_BACKEND=fake
 unset _proof_mode _proof_lib

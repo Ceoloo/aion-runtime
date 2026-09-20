@@ -62,7 +62,7 @@ test('live-capability: a fully explicit, allowlisted test configuration is the O
 const without = (k) => { const e = LIVE(); delete e[k]; return e; };
 for (const [k, frag] of [
   ['AION_PROOF_LIVE', /AION_PROOF_LIVE=1/], ['GHL_BACKEND', /GHL_BACKEND=live/], ['GHL_API_KEY', /GHL_API_KEY not set/],
-  ['GHL_LOCATION_ID', /GHL_LOCATION_ID not set/], ['AION_PROOF_GHL_TEST_LOCATIONS', /allowlist/], ['AION_PROOF_CREDENTIAL_SCOPE', /attestation/],
+  ['GHL_LOCATION_ID', /GHL_LOCATION_ID not set/], ['AION_PROOF_GHL_TEST_LOCATIONS', /allowlist/], ['AION_PROOF_CREDENTIAL_SCOPE', /acknowledgement missing/],
   ['GHL_ACCEPTANCE_TENANT', /GHL_ACCEPTANCE_TENANT/], ['GHL_ACCEPTANCE_CONTACT_ID', /CONTACT_ID/], ['GHL_ACCEPTANCE_OPPORTUNITY_ID', /OPPORTUNITY_ID/],
   ['GHL_ACCEPTANCE_PRIOR_STAGE', /PRIOR_STAGE/], ['GHL_ACCEPTANCE_TARGET_STAGE', /TARGET_STAGE/], ['AION_RUNTIME_URL', /AION_RUNTIME_URL must be set/],
 ]) test(`live-capability: refuses when ${k} is missing`, () => refused(run('live-capability', without(k)), frag));
@@ -83,7 +83,7 @@ test('live: refuses credentials identical to the production env file on this hos
   const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pg-')), 'env'); fs.writeFileSync(f, 'GHL_API_KEY=test-only-key\nGHL_LOCATION_ID=someone-else\n');
   refused(run('live-capability', { ...LIVE(), AION_PRODUCTION_ENV_FILE: f }), /equals the production credential/);
 });
-test('live-acceptance uses the same requirements', () => refused(run('live-acceptance', without('AION_PROOF_CREDENTIAL_SCOPE')), /attestation/));
+test('live-acceptance uses the same requirements', () => refused(run('live-acceptance', without('AION_PROOF_CREDENTIAL_SCOPE')), /acknowledgement missing/));
 test('live-aio17 is refused unconditionally, even with a fully valid live configuration', () => refused(run('live-aio17', LIVE()), /BLOCKED/));
 test('unknown mode is refused', () => refused(run('sandbox'), /unknown mode/));
 
@@ -96,6 +96,10 @@ test('structural: every proof:* npm script is routed through the guard', () => {
     const guarded = m ? fs.readFileSync(path.join(root, m[1]), 'utf8').includes('lib/proof-env.sh') : cmd.includes('proof-guard.mjs');
     assert.ok(guarded, `${name} is not guarded: ${cmd}`);
   }
+});
+test('structural: live proofs verify credential ISOLATION (not just an attestation)', () => {
+  assert.match(pkg.scripts['proof:ghl-live-capability'], /proof-credential-scope\.mjs/);
+  assert.match(fs.readFileSync(path.join(here, 'proof-env.sh'), 'utf8'), /live-\*\) node .*proof-credential-scope\.mjs/);
 });
 test('structural: every script that starts a runtime, or is named proof/acceptance/certification, sources the prelude', () => {
   for (const f of shFiles) {

@@ -62,6 +62,7 @@ export function createServer(
     git_sha: config.release.gitSha,
     service_version: config.release.serviceVersion,
     build_time: config.release.buildTime,
+    crm_backend: config.crmBackend.kind,
   };
 
   const server = http.createServer((req, res) => {

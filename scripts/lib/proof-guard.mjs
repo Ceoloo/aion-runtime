@@ -88,7 +88,9 @@ if (mode === 'fake') {
   const prodLoc = new Set([...PROD.sha256.ghlLocationIds, ...extra('AION_PRODUCTION_GHL_LOCATION_SHA256')]);
   if (loc && prodLoc.has(sha(loc))) bad('the target location is a known PRODUCTION location');
   if (allow.some((a) => prodLoc.has(sha(a)))) bad('AION_PROOF_GHL_TEST_LOCATIONS contains a known PRODUCTION location');
-  if (val('AION_PROOF_CREDENTIAL_SCOPE') !== 'test-location') bad('AION_PROOF_CREDENTIAL_SCOPE=test-location attestation missing (the token must be scoped to the test location only)');
+  // The attestation is a NECESSARY acknowledgement, never proof of isolation: proof-credential-scope.mjs then verifies
+  // isolation behaviourally with read-only probes (own location reachable; random/agency/production locations denied).
+  if (val('AION_PROOF_CREDENTIAL_SCOPE') !== 'test-location') bad('AION_PROOF_CREDENTIAL_SCOPE=test-location acknowledgement missing (necessary, not sufficient: isolation is then verified against the live API)');
 
   // On a host that has the production env file, the provided credentials must differ from production's.
   try {

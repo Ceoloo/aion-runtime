@@ -10,6 +10,7 @@ import {
   resolveGhlConnection,
 } from './connection.js';
 import { sharedFakeGhlBackend } from './fake-ghl-backend.js';
+import { resolveGhlBackendChoice } from './backend-policy.js';
 import {
   normalizeAppointment,
   normalizeContact,
@@ -541,42 +542,10 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-/**
- * Backend selection.
- *
- *  - GHL_BACKEND=fake  -> always the fixture backend, even if credentials are present.
- *  - GHL_BACKEND=live  -> live backend; throws if credentials are missing (never silently falls back).
- *  - unset             -> legacy production behaviour: credentials present => live. UNCHANGED, so a
- *                         deployed runtime keeps working until its .env sets GHL_BACKEND=live explicitly.
- *  - AION_PROOF=1 (set by every proof script) disables the legacy inference: credentials NEVER imply
- *    live, and an explicit live selection additionally needs AION_PROOF_LIVE=1.
- */
-export class GhlBackendSelectionError extends Error {}
+export { GhlBackendSelectionError } from './backend-policy.js';
 
 export function createGhlBackendFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): GhlBackend {
-  const requested = env.GHL_BACKEND?.trim().toLowerCase();
-  const proofContext = env.AION_PROOF === '1';
-  if (requested && requested !== 'fake' && requested !== 'live') {
-    throw new GhlBackendSelectionError(`GHL_BACKEND must be "fake" or "live", got "${requested}"`);
-  }
-  if (requested === 'fake') return sharedFakeGhlBackend;
-  const connection = resolveGhlConnection({ tenantId: '_probe', env });
-  if (requested === 'live') {
-    if (proofContext && env.AION_PROOF_LIVE !== '1') {
-      throw new GhlBackendSelectionError('live GHL backend in a proof context requires AION_PROOF_LIVE=1');
-    }
-    if (!connection) {
-      throw new GhlBackendSelectionError('GHL_BACKEND=live but GHL_API_KEY / GHL_LOCATION_ID are not set');
-    }
-    return new LiveGhlBackend();
-  }
-  if (proofContext) {
-    throw new GhlBackendSelectionError(
-      'AION_PROOF=1 requires an explicit GHL_BACKEND=fake|live — credentials never imply live mode',
-    );
-  }
-  if (connection) return new LiveGhlBackend();
-  return sharedFakeGhlBackend;
+  return resolveGhlBackendChoice(env).kind === 'live' ? new LiveGhlBackend() : sharedFakeGhlBackend;
 }

@@ -10,6 +10,7 @@
 
 import type { GatewayAuthConfig } from './auth/types.js';
 import { loadGatewayAuthConfig, AuthConfigError } from './auth/config.js';
+import { resolveGhlBackendChoice, GhlBackendSelectionError, type CrmBackendChoice } from './adapters/ghl/backend-policy.js';
 
 export type Environment = 'local' | 'staging' | 'production';
 
@@ -40,6 +41,8 @@ export interface RuntimeConfig {
    * durable-actor anti-escalation still enforced.
    */
   auth: GatewayAuthConfig;
+  /** Resolved CRM backend (fake vs live) and how it was chosen — validated at startup, reported by /health/ready. */
+  crmBackend: CrmBackendChoice;
 }
 
 export class ConfigError extends Error {
@@ -117,6 +120,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     throw err;
   }
 
+  let crmBackend: CrmBackendChoice;
+  try {
+    crmBackend = resolveGhlBackendChoice(env);
+  } catch (err) {
+    if (err instanceof GhlBackendSelectionError) {
+      throw new ConfigError(err.message);
+    }
+    throw err;
+  }
+
   return {
     environment,
     databaseUrl,
@@ -126,6 +139,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     runSmokeOnBoot: env.RUN_SMOKE_ON_BOOT === 'true',
     corsOrigins,
     auth,
+    crmBackend,
     release: {
       serviceVersion: env.SERVICE_VERSION ?? 'unknown',
       gitSha: env.GIT_SHA ?? 'unknown',
