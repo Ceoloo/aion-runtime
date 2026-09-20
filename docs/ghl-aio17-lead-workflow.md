@@ -92,10 +92,15 @@ changing the adapter port.
 # Contract fixtures (validation, disabled caps, lead workflow, durability)
 npm run test:aio17-ghl-fixtures
 
-# Isolated Runtime matrix (fake backend; requires Postgres like other proofs)
+# Isolated adapter fixtures (fake backend; no Runtime/Postgres)
 npm run proof:aio17-ghl-lead-workflow
+
+# End-to-end durable revenue workflow on Runtime + Postgres (restart, gates,
+# CRM writes, execution record, cost/value telemetry). GHL fake backend in CI.
+npm run proof:revenue-workflow
 ```
 
-AIO-17 remains **partially complete** after this PR. OL-001 resume still needs
-the remaining conversation/appointment write enablement and the separate
-model-provider dependency.
+AIO-17 adapter fixtures remain green; the Runtime-hosted revenue-workflow proof
+is the definition-of-done path for Lead→Opp→Note/Task→gate→outcome. Conversation
+send + appointment create stay `CAPABILITY_DISABLED` until a later enablement
+slice. OL-001 model-provider dependency is separate.

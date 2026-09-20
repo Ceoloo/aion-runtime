@@ -223,10 +223,19 @@ export class FakeGhlBackend implements GhlBackend {
       }
       case 'opportunity.update': {
         const id = str(payload['opportunityId']);
-        if (!id || !ws.opportunities.has(id)) {
-          throw new Error(`opportunity not found: ${id ?? '(missing)'}`);
-        }
-        const existing = ws.opportunities.get(id)!;
+        if (!id) throw new Error('opportunityId required');
+        // Upsert: process restart drops in-memory fake state; parked approvals
+        // still carry opportunityId + stage and must resume cleanly (live GHL
+        // would retain the row).
+        const existing = ws.opportunities.get(id) ?? {
+          id,
+          contactId: str(payload['contactId']),
+          pipelineId: str(payload['pipelineId']) ?? 'pipe_default',
+          name: str(payload['name']) ?? 'Untitled opportunity',
+          stage: str(payload['stage']) ?? 'new',
+          value: typeof payload['value'] === 'number' ? payload['value'] : undefined,
+          fields: {},
+        };
         const next: CrmOpportunity = {
           ...existing,
           name: str(payload['name']) ?? existing.name,
