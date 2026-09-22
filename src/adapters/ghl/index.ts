@@ -44,3 +44,6 @@ export {
 } from './constants.js';
 export { validateGhlPayload, type PayloadValidationError } from './payload-validation.js';
 export { mapGhlHttpError, type MappedProviderError } from './provider-errors.js';
+
+export { resolveGhlBackendChoice, GhlBackendSelectionError } from './backend-policy.js';
+export type { CrmBackendChoice, CrmBackendKind } from './backend-policy.js';

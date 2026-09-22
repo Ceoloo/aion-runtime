@@ -30,8 +30,9 @@ import { RuntimeClient, RuntimeApiError } from './clients/runtime-client.js';
 
 const BASE_URL =
   process.env.AION_RUNTIME_URL ?? `http://127.0.0.1:${process.env.PORT ?? '8103'}`;
-const TENANT = 'aion-systems';
-const OTHER = 'aion-media';
+// Clearly synthetic tenant ids: never the production tenant, so proof rows can never be mistaken for it.
+const TENANT = 'aion-proof-synthetic';
+const OTHER = 'aion-proof-foreign';
 const PHASE = process.env.RW_PROOF_PHASE ?? 'all';
 const HANDOFF_PATH =
   process.env.RW_HANDOFF_PATH ?? '/tmp/revenue-workflow-handoff.json';

@@ -8,6 +8,7 @@
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/proof-env.sh" fake
 ROOT="$(pwd)"
 
 : "${MIGRATION_DATABASE_URL:?}"

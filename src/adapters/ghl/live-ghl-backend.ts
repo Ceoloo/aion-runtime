@@ -10,6 +10,7 @@ import {
   resolveGhlConnection,
 } from './connection.js';
 import { sharedFakeGhlBackend } from './fake-ghl-backend.js';
+import { resolveGhlBackendChoice } from './backend-policy.js';
 import {
   normalizeAppointment,
   normalizeContact,
@@ -541,12 +542,10 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+export { GhlBackendSelectionError } from './backend-policy.js';
+
 export function createGhlBackendFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): GhlBackend {
-  const connection = resolveGhlConnection({ tenantId: '_probe', env });
-  if (connection) {
-    return new LiveGhlBackend();
-  }
-  return sharedFakeGhlBackend;
+  return resolveGhlBackendChoice(env).kind === 'live' ? new LiveGhlBackend() : sharedFakeGhlBackend;
 }
