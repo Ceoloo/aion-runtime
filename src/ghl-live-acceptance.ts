@@ -16,22 +16,24 @@ import {
 } from '@aion/core';
 import { RuntimeClient } from './clients/runtime-client.js';
 
+
+/** Required env: no defaults, so a proof can never fall back to a production tenant or record. */
+function requiredEnv(name: string): string {
+  const v = process.env[name]?.trim();
+  if (!v) {
+    console.error(`[proof] ${name} must be set explicitly (no default)`);
+    process.exit(3);
+  }
+  return v;
+}
+
 const BASE_URL =
   process.env.AION_RUNTIME_URL ?? `http://127.0.0.1:${process.env.PORT ?? '8099'}`;
-const TENANT = process.env.GHL_ACCEPTANCE_TENANT ?? 'aion-systems';
-
-/** AION Empire / live defaults discovered 2026-09-07 (overridable). */
-const OPP_ID =
-  process.env.GHL_ACCEPTANCE_OPPORTUNITY_ID ?? 'rGbIyrAvGDcmMEzjBER4';
-const CONTACT_ID =
-  process.env.GHL_ACCEPTANCE_CONTACT_ID ?? 'MyWCgeFaKnifp6LM7yIc';
-/** Negotiation → Proposal Sent (one stage back; restored after proof). */
-const TARGET_STAGE =
-  process.env.GHL_ACCEPTANCE_TARGET_STAGE ??
-  '691415a9-30fd-4977-b1ec-fdc4efbd85fc';
-const PRIOR_STAGE =
-  process.env.GHL_ACCEPTANCE_PRIOR_STAGE ??
-  'fdd0844f-4260-4522-a8f3-87d361dfb5fa';
+const TENANT = requiredEnv('GHL_ACCEPTANCE_TENANT');
+const OPP_ID = requiredEnv('GHL_ACCEPTANCE_OPPORTUNITY_ID');
+const CONTACT_ID = requiredEnv('GHL_ACCEPTANCE_CONTACT_ID');
+const TARGET_STAGE = requiredEnv('GHL_ACCEPTANCE_TARGET_STAGE');
+const PRIOR_STAGE = requiredEnv('GHL_ACCEPTANCE_PRIOR_STAGE');
 
 const PERMS = [
   capability('crm.contact.read'),
@@ -122,7 +124,7 @@ async function main(): Promise<void> {
       actor: primary,
       requestId: newRequestId(),
       serviceKey: formatServiceKey('crm.contact.search', 1),
-      payload: { query: 'annfiera' },
+      payload: { query: 'sample' },
       metadata: { tenantId: TENANT, proof: 'ghl-live-acceptance' },
     })) as CommandResponse;
     if (!succeeded(res)) {
