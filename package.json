@@ -38,7 +38,8 @@
     "test:submit-concurrency": "npm run build && node --test dist/commands-submit-concurrency.test.js",
     "test:identity": "npm run build && node --test dist/auth/identity-plane.test.js",
     "test:trust-score": "npm run build && node --test dist/trust-score.test.js",
-    "test:gateway": "npm run build && node --test dist/outcomes-sessions-gateway.test.js dist/commands-submit-concurrency.test.js dist/auth/identity-plane.test.js dist/trust-score.test.js",
+    "test:decision-identity": "npm run build && node --test dist/auth/decision-identity.test.js",
+    "test:gateway": "npm run build && node --test dist/auth/decision-identity.test.js dist/outcomes-sessions-gateway.test.js dist/commands-submit-concurrency.test.js dist/auth/identity-plane.test.js dist/trust-score.test.js",
     "test:proof-safety": "npm run build && node --test dist/adapters/ghl/backend-selection.test.js scripts/lib/proof-guard.test.mjs scripts/lib/proof-credential-scope.test.mjs"
   },
   "dependencies": {

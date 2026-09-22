@@ -223,7 +223,7 @@ async function main(): Promise<void> {
       requestId: newRequestId(),
       serviceKey: formatServiceKey('crm.opportunity.update', 1),
       payload: {
-        opportunityId: 'ghl_opp_seed',
+        opportunityId: 'fixture_opportunity_0001',
         stage: 'qualified',
         proposedBy: 'ghl-phase-b',
       },

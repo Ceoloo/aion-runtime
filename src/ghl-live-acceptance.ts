@@ -124,7 +124,7 @@ async function main(): Promise<void> {
       actor: primary,
       requestId: newRequestId(),
       serviceKey: formatServiceKey('crm.contact.search', 1),
-      payload: { query: 'annfiera' },
+      payload: { query: 'sample' },
       metadata: { tenantId: TENANT, proof: 'ghl-live-acceptance' },
     })) as CommandResponse;
     if (!succeeded(res)) {

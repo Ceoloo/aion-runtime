@@ -132,6 +132,7 @@ import {
   resolveDurableActor,
   resolveApproverActor,
 } from './auth/resolve-actor.js';
+import { resolveDecisionIdentity } from './auth/decision-identity.js';
 import {
   attachAgentTrustScore,
   isTerminalExecutionStatus,
@@ -284,7 +285,7 @@ export async function handleGatewayRequest(
 
     const approvalMatch = /^\/v1\/approvals\/([^/]+)\/decision$/.exec(path);
     if (method === 'POST' && approvalMatch) {
-      return await decideApproval(approvalMatch[1]!, await readJsonBody(req), cp, logger, principal);
+      return await decideApproval(approvalMatch[1]!, await readJsonBody(req), cp, logger, principal, req);
     }
 
     if (method === 'GET' && path === '/v1/executions') {
@@ -1051,49 +1052,71 @@ async function decideApproval(
   cp: ControlPlane,
   logger: Logger,
   principal: Principal | null,
+  req: IncomingMessage,
 ): Promise<GatewayResponse> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return jsonError(400, 'invalid_body', 'decision body must be a JSON object');
   }
   const raw = body as Record<string, unknown>;
-  const parsed = ApprovalDecision.safeParse({
-    approvalId,
-    approve: raw.approve,
-    decidedBy: raw.decidedBy,
-    ...(typeof raw.note === 'string' ? { note: raw.note } : {}),
-  });
-  if (!parsed.success) {
-    return jsonError(
-      400,
-      'invalid_decision',
-      'decision must include approve (boolean) and decidedBy (actor id)',
-    );
-  }
+  const required = cp.auth.mode === 'required';
 
-  // Identity plane: approver must be a verified human Actor (durable grants).
   let claimedApprover: Actor | undefined;
   if (raw.actor !== undefined) {
     const actorParsed = Actor.safeParse(raw.actor);
     if (!actorParsed.success) {
       return jsonError(400, 'invalid_actor', 'actor must satisfy the Core Actor contract');
     }
-    if (actorParsed.data.actorId !== parsed.data.decidedBy) {
-      return jsonError(
-        400,
-        'actor_mismatch',
-        'actor.actorId must match decidedBy',
-      );
-    }
     claimedApprover = actorParsed.data;
   }
-  const approverResolved = await resolveApproverActor(
+  if (!required && claimedApprover && claimedApprover.actorId !== raw.decidedBy) {
+    return jsonError(400, 'actor_mismatch', 'actor.actorId must match decidedBy');
+  }
+  if (typeof raw.approve !== 'boolean' || (!required && typeof raw.decidedBy !== 'string')) {
+    return jsonError(
+      400,
+      'invalid_decision',
+      required
+        ? 'decision must include approve (boolean); the approver identity is taken from the authenticated principal'
+        : 'decision must include approve (boolean) and decidedBy (actor id)',
+    );
+  }
+
+  // Identity plane: in required mode the approver is DERIVED from the authenticated principal (never the body).
+  const identity = await resolveDecisionIdentity(
     cp,
-    parsed.data.decidedBy,
-    claimedApprover,
+    {
+      approvalId,
+      bodyDecidedBy: raw.decidedBy,
+      bodyActor: claimedApprover,
+      tenantHeader: callerTenantId(req),
+    },
     principal,
     cp.auth.mode,
+    async () => {
+      const r = await resolveApproverActor(cp, String(raw.decidedBy), claimedApprover, principal, cp.auth.mode);
+      return r.ok
+        ? { ok: true, decidedBy: String(raw.decidedBy), actor: r.actor, principal, identitySource: 'claimed' as const }
+        : r;
+    },
   );
-  if (!approverResolved.ok) return authDeniedResponse(approverResolved);
+  if (!identity.ok) {
+    logger.warn('gateway_approval_decision_denied', {
+      operation: 'POST /v1/approvals/:id/decision',
+      approval_id: approvalId,
+      code: identity.code,
+      principal_id: principal?.principalId ?? null,
+    });
+    return authDeniedResponse(identity);
+  }
+  const parsed = ApprovalDecision.safeParse({
+    approvalId,
+    approve: raw.approve,
+    decidedBy: identity.decidedBy,
+    ...(typeof raw.note === 'string' ? { note: raw.note } : {}),
+  });
+  if (!parsed.success) {
+    return jsonError(400, 'invalid_decision', 'decision failed validation');
+  }
 
   const result = await cp.orchestrator.resume(parsed.data);
   const actor = await cp.dataLayer.actors.get(result.run.actorId);
@@ -1143,7 +1166,14 @@ async function decideApproval(
       {
         at: result.run.updatedAt,
         event: parsed.data.approve ? 'approval.granted' : 'approval.rejected',
-        detail: { approvalId },
+        detail: {
+          approvalId,
+          decidedBy: identity.decidedBy,
+          identitySource: identity.identitySource,
+          ...(identity.principal
+            ? { principalId: identity.principal.principalId, principalKind: identity.principal.kind }
+            : {}),
+        },
       },
       ...(seededOutcome
         ? [
@@ -1176,6 +1206,9 @@ async function decideApproval(
     run_id: result.run.runId,
     execution_id: persisted.executionId,
     status: result.status,
+    decided_by: identity.decidedBy,
+    identity_source: identity.identitySource,
+    principal_id: identity.principal?.principalId ?? null,
     ...(persisted.outcomeId ? { outcome_id: persisted.outcomeId } : {}),
   });
 

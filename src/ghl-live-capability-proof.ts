@@ -163,7 +163,7 @@ async function modelStructuredCall(): Promise<Evidence> {
   const system = `You classify CRM leads. Reply with ONLY compact JSON:
 {"decision":"qualified"|"nurture"|"disqualified","confidence":0-1,"rationale":"short"}`;
   const user =
-    'Classify this lead as qualified / nurture / disqualified. Lead: Annfiera McPherson, ModernRelx, tags follow-up/high priority/warm lead, open opportunity in Negotiation.';
+    'Classify this lead as qualified / nurture / disqualified. Lead: Sample Lead, Example Client, tags follow-up/high priority/warm lead, open opportunity in Negotiation.';
 
   const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
@@ -251,7 +251,7 @@ async function main(): Promise<void> {
   // ── 1. Live GHL reads ───────────────────────────────────────────────────
   const readEvidence: Evidence[] = [];
   const reads: Array<[string, string, Record<string, unknown>]> = [
-    ['G1a', 'crm.contact.search@1', { query: 'annfiera' }],
+    ['G1a', 'crm.contact.search@1', { query: 'sample' }],
     ['G1b', 'crm.contact.read@1', { contactId: CONTACT_ID }],
     ['G1c', 'crm.opportunity.search@1', {}],
     ['G1d', 'crm.opportunity.read@1', { opportunityId: OPP_ID }],
