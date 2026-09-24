@@ -23,12 +23,18 @@ const logger = new Logger(
   'error',
 );
 
-function mockReq(body?: unknown): IncomingMessage {
+const TENANT = 'tenant_outcomes_fixture';
+const OTHER_TENANT = 'tenant_outcomes_other';
+
+function mockReq(
+  body?: unknown,
+  headers: Record<string, string> = { 'x-aion-tenant-id': TENANT },
+): IncomingMessage {
   const raw = body === undefined ? '' : JSON.stringify(body);
   const chunks = raw ? [Buffer.from(raw)] : [];
   let i = 0;
   return {
-    headers: {},
+    headers,
     async *[Symbol.asyncIterator]() {
       while (i < chunks.length) yield chunks[i++]!;
     },
@@ -38,7 +44,9 @@ function mockReq(body?: unknown): IncomingMessage {
 function buildMockControlPlane(): {
   cp: ControlPlane;
   executions: Map<string, ExecutionObject>;
+  tenantMissions: Map<string, string[]>;
 } {
+  const tenantMissions = new Map<string, string[]>();
   const outcomes = new Map<string, OutcomeRecord>();
   const sessions = new Map<
     string,
@@ -155,6 +163,11 @@ function buildMockControlPlane(): {
             .map((s) => s.finalRecord);
         },
       },
+      missions: {
+        async listForTenant(tenantId: string) {
+          return (tenantMissions.get(tenantId) ?? []).map((missionId) => ({ missionId }));
+        },
+      },
       executions: {
         async getByRunId(runId: string) {
           return [...executions.values()].find((e) => e.runId === runId);
@@ -168,7 +181,7 @@ function buildMockControlPlane(): {
     auth: { mode: 'open' as const, apiKeys: [] },
   } as unknown as ControlPlane;
 
-  return { cp, executions };
+  return { cp, executions, tenantMissions };
 }
 
 test('outcomes: create, get, list, patch + optional execution link', async () => {
@@ -374,4 +387,159 @@ test('revenue sessions: create, checkpoint, finalize, reload, stale 409', async 
   );
   assert.equal(finalizedList?.status, 200);
   assert.equal((finalizedList?.body as { count: number }).count, 1);
+});
+
+function executionFixture(runId: string, tenantId?: string): ExecutionObject {
+  const now = new Date().toISOString();
+  return {
+    executionId: `exe_${runId}`,
+    actorId: 'act_test',
+    runId,
+    requestId: 'req_test',
+    commandId: 'cmd_test',
+    correlationId: 'cor_test',
+    status: 'succeeded',
+    autonomyLevel: 'L1',
+    cost: { units: 1 },
+    auditTrace: [],
+    ...(tenantId ? { tenantId } : {}),
+    createdAt: now,
+    updatedAt: now,
+    metadata: {},
+  } as unknown as ExecutionObject;
+}
+
+test('outcomes: tenant header is required on every outcome route', async () => {
+  const { cp } = buildMockControlPlane();
+  const runId = newRunId();
+  const created = await handleGatewayRequest(
+    'POST',
+    '/v1/outcomes',
+    mockReq({ runId, status: 'pending' }),
+    cp,
+    logger,
+  );
+  const outcomeId = (created?.body as { outcome: OutcomeRecord }).outcome.outcomeId;
+
+  const noTenant = {};
+  const calls: [string, string, unknown][] = [
+    ['POST', '/v1/outcomes', { runId, status: 'pending' }],
+    ['GET', `/v1/outcomes?runId=${runId}`, undefined],
+    ['GET', `/v1/outcomes/${outcomeId}`, undefined],
+    ['PATCH', `/v1/outcomes/${outcomeId}`, { status: 'realized' }],
+  ];
+  for (const [method, path, body] of calls) {
+    const res = await handleGatewayRequest(method, path, mockReq(body, noTenant), cp, logger);
+    assert.equal(res?.status, 403, `${method} ${path}: ${JSON.stringify(res?.body)}`);
+    assert.equal((res?.body as { error: string }).error, 'tenant_required');
+  }
+});
+
+test('outcomes: another tenant cannot create, read, list or patch a run outcome', async () => {
+  const { cp, executions } = buildMockControlPlane();
+  const runId = newRunId();
+  executions.set(`exe_${runId}`, executionFixture(runId, TENANT));
+
+  const created = await handleGatewayRequest(
+    'POST',
+    '/v1/outcomes',
+    mockReq({ runId, status: 'pending', value: 100, currency: 'USD' }),
+    cp,
+    logger,
+  );
+  assert.equal(created?.status, 201, JSON.stringify(created?.body));
+  const outcomeId = (created?.body as { outcome: OutcomeRecord }).outcome.outcomeId;
+
+  const other = { 'x-aion-tenant-id': OTHER_TENANT };
+  const attempts: [string, string, unknown][] = [
+    ['POST', '/v1/outcomes', { runId, status: 'realized', value: 1_000_000 }],
+    ['GET', `/v1/outcomes/${outcomeId}`, undefined],
+    ['GET', `/v1/outcomes?runId=${runId}`, undefined],
+    ['PATCH', `/v1/outcomes/${outcomeId}`, { status: 'realized', value: 1_000_000 }],
+  ];
+  for (const [method, path, body] of attempts) {
+    const res = await handleGatewayRequest(method, path, mockReq(body, other), cp, logger);
+    assert.equal(res?.status, 403, `${method} ${path}: ${JSON.stringify(res?.body)}`);
+    assert.equal((res?.body as { error: string }).error, 'tenant_isolation_denied');
+  }
+
+  const own = await handleGatewayRequest('GET', `/v1/outcomes/${outcomeId}`, mockReq(), cp, logger);
+  assert.equal(own?.status, 200);
+  const unchanged = (own?.body as { outcome: OutcomeRecord }).outcome;
+  assert.equal(unchanged.value, 100, 'denied patch did not write');
+  assert.equal(unchanged.status, 'pending');
+});
+
+test('outcomes: mission-scoped outcomes require the mission to belong to the caller tenant', async () => {
+  const { cp, tenantMissions } = buildMockControlPlane();
+  const missionId = 'msn_outcomes_fixture';
+  tenantMissions.set(TENANT, [missionId]);
+  const runId = newRunId();
+
+  const foreign = await handleGatewayRequest(
+    'POST',
+    '/v1/outcomes',
+    mockReq({ runId, missionId, status: 'realized' }, { 'x-aion-tenant-id': OTHER_TENANT }),
+    cp,
+    logger,
+  );
+  assert.equal(foreign?.status, 403, JSON.stringify(foreign?.body));
+
+  const created = await handleGatewayRequest(
+    'POST',
+    '/v1/outcomes',
+    mockReq({ runId, missionId, status: 'realized' }),
+    cp,
+    logger,
+  );
+  assert.equal(created?.status, 201, JSON.stringify(created?.body));
+
+  const listedOwn = await handleGatewayRequest(
+    'GET',
+    `/v1/outcomes?missionId=${missionId}`,
+    mockReq(),
+    cp,
+    logger,
+  );
+  assert.equal((listedOwn?.body as { count: number }).count, 1);
+
+  const listedForeign = await handleGatewayRequest(
+    'GET',
+    `/v1/outcomes?missionId=${missionId}`,
+    mockReq(undefined, { 'x-aion-tenant-id': OTHER_TENANT }),
+    cp,
+    logger,
+  );
+  assert.equal(listedForeign?.status, 403);
+});
+
+test('outcomes: header must be within the authenticated principal tenants', async () => {
+  const { cp } = buildMockControlPlane();
+  (cp as { auth: ControlPlane['auth'] }).auth = {
+    mode: 'required',
+    apiKeys: [
+      {
+        token: 'tok_outcomes_fixture',
+        principal: {
+          principalId: 'principal_outcomes',
+          kind: 'operator',
+          actorId: 'act_outcomes_fixture',
+          tenantIds: [TENANT],
+          roles: ['invoke'],
+        },
+      },
+    ],
+  };
+  const res = await handleGatewayRequest(
+    'POST',
+    '/v1/outcomes',
+    mockReq(
+      { runId: newRunId(), status: 'pending' },
+      { authorization: 'Bearer tok_outcomes_fixture', 'x-aion-tenant-id': OTHER_TENANT },
+    ),
+    cp,
+    logger,
+  );
+  assert.equal(res?.status, 403, JSON.stringify(res?.body));
+  assert.equal((res?.body as { error: string }).error, 'tenant_forbidden');
 });

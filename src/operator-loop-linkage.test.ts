@@ -36,12 +36,12 @@ const logger = new Logger(
 const CAP = capability('crm.opportunity.update');
 const MISSION = 'msn_operator_loop_fixture';
 
-function mockReq(body?: unknown): IncomingMessage {
+function mockReq(body?: unknown, headers: Record<string, string> = {}): IncomingMessage {
   const raw = body === undefined ? '' : JSON.stringify(body);
   const chunks = raw ? [Buffer.from(raw)] : [];
   let i = 0;
   return {
-    headers: {},
+    headers,
     async *[Symbol.asyncIterator]() {
       while (i < chunks.length) yield chunks[i++]!;
     },
@@ -297,4 +297,84 @@ test('C: granted-then-failed execution records the error in its audit trace', as
       exe.auditTrace.findIndex((e) => e.event === 'execution.failed'),
     'failure follows the grant in the trail',
   );
+});
+
+test('D: human-submitted gated command takes the caller tenant onto execution + approval', async () => {
+  const { cp, approvals, approver, worker } = buildControlPlane({ resume: 'completed' });
+  const submitted = await handleGatewayRequest(
+    'POST',
+    '/v1/commands',
+    mockReq(
+      { name: 'crm.opportunity.update', actor: worker, capability: CAP, missionId: MISSION },
+      { 'x-aion-tenant-id': 'tenant_console' },
+    ),
+    cp,
+    logger,
+  );
+  assert.ok(submitted);
+  assert.equal(submitted.status, 202, JSON.stringify(submitted.body));
+  const body = submitted.body as {
+    approval: ApprovalRequest;
+    execution: { tenantId?: string; metadata?: Record<string, unknown> };
+  };
+  assert.equal(body.execution.tenantId, 'tenant_console');
+  assert.equal(approvals.get(body.approval.approvalId)!.tenantId, 'tenant_console');
+
+  const decided = await handleGatewayRequest(
+    'POST',
+    `/v1/approvals/${body.approval.approvalId}/decision`,
+    mockReq({ approve: true, decidedBy: approver.actorId, actor: approver }),
+    cp,
+    logger,
+  );
+  assert.equal(decided?.status, 200, JSON.stringify(decided?.body));
+  const resumed = (decided!.body as { execution: { tenantId?: string } }).execution;
+  assert.equal(resumed.tenantId, 'tenant_console', 'resumed execution keeps the tenant');
+});
+
+test('E: human submit cannot claim a tenant outside the principal binding', async () => {
+  const { cp, approvals, worker } = buildControlPlane({ resume: 'completed' });
+  (cp as { auth: ControlPlane['auth'] }).auth = {
+    mode: 'required',
+    apiKeys: [
+      {
+        token: 'tok_fixture_worker',
+        principal: {
+          principalId: 'principal_worker',
+          kind: 'operator',
+          actorId: worker.actorId,
+          tenantIds: ['tenant_a'],
+          roles: ['invoke'],
+        },
+      },
+    ],
+  };
+
+  const denied = await handleGatewayRequest(
+    'POST',
+    '/v1/commands',
+    mockReq(
+      { name: 'crm.opportunity.update', actor: worker, capability: CAP, missionId: MISSION },
+      { authorization: 'Bearer tok_fixture_worker', 'x-aion-tenant-id': 'tenant_b' },
+    ),
+    cp,
+    logger,
+  );
+  assert.ok(denied);
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  assert.equal((denied.body as { error: string }).error, 'tenant_forbidden');
+  assert.equal(approvals.size, 0, 'nothing was submitted');
+
+  const allowed = await handleGatewayRequest(
+    'POST',
+    '/v1/commands',
+    mockReq(
+      { name: 'crm.opportunity.update', actor: worker, capability: CAP, missionId: MISSION },
+      { authorization: 'Bearer tok_fixture_worker', 'x-aion-tenant-id': 'tenant_a' },
+    ),
+    cp,
+    logger,
+  );
+  assert.equal(allowed?.status, 202, JSON.stringify(allowed?.body));
+  assert.equal((allowed!.body as { execution: { tenantId?: string } }).execution.tenantId, 'tenant_a');
 });

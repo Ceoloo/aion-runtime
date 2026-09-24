@@ -273,7 +273,7 @@ export async function handleGatewayRequest(
     principalContext.enterWith(principal);
 
     if (method === 'POST' && path === '/v1/commands') {
-      return await submitCommand(await readJsonBody(req), cp, logger, principal);
+      return await submitCommand(await readJsonBody(req), cp, logger, principal, req);
     }
 
     if (method === 'POST' && path === '/v1/missions/run') {
@@ -343,20 +343,21 @@ export async function handleGatewayRequest(
     }
 
     if (method === 'POST' && path === '/v1/outcomes') {
-      return await createOutcome(await readJsonBody(req), cp);
+      return await createOutcome(await readJsonBody(req), cp, req);
     }
     if (method === 'GET' && path === '/v1/outcomes') {
-      return await listOutcomes(url, cp);
+      return await listOutcomes(url, cp, req);
     }
     const outcomeMatch = /^\/v1\/outcomes\/([^/]+)$/.exec(path);
     if (method === 'GET' && outcomeMatch) {
-      return await getOutcome(decodeURIComponent(outcomeMatch[1]!), cp);
+      return await getOutcome(decodeURIComponent(outcomeMatch[1]!), cp, req);
     }
     if (method === 'PATCH' && outcomeMatch) {
       return await patchOutcome(
         decodeURIComponent(outcomeMatch[1]!),
         await readJsonBody(req),
         cp,
+        req,
       );
     }
 
@@ -603,6 +604,7 @@ async function submitCommand(
   cp: ControlPlane,
   logger: Logger,
   principal: Principal | null,
+  req: IncomingMessage,
 ): Promise<GatewayResponse> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return jsonError(400, 'invalid_body', 'command body must be a JSON object');
@@ -678,6 +680,20 @@ async function submitCommand(
   const resolved = await resolveDurableActor(cp, actor, principal, cp.auth.mode);
   if (!resolved.ok) return authDeniedResponse(resolved);
   actor = resolved.actor;
+
+  // Operator Loop: a human/system actor carries no tenant of its own, so the
+  // caller's x-aion-tenant-id — which must be within the Principal's bound
+  // tenants — becomes the execution's (and so the approval's) tenant. Agents
+  // keep their own actor.tenantId (Mission 003); no header means no tenant, as
+  // before.
+  let submitterTenantId: string | undefined;
+  if (actor.actorType !== 'agent') {
+    submitterTenantId = callerTenantId(req);
+    const tenantDenied = assertPrincipalTenantAccess(principal, submitterTenantId, {
+      requireTenant: false,
+    });
+    if (tenantDenied) return authDeniedResponse(tenantDenied);
+  }
 
   // Catalog contract: requiredPermissions are deny-by-default grants the caller
   // must hold (in addition to the resolved capability itself).
@@ -923,6 +939,7 @@ async function submitCommand(
       ...(actor.actorType === 'agent' && (actor as AgentActor).tenantId
         ? { tenantId: (actor as AgentActor).tenantId }
         : {}),
+      ...(submitterTenantId ? { tenantId: submitterTenantId } : {}),
       ...(catalogServiceKey ? { serviceKey: catalogServiceKey } : {}),
       ...(catalogApprovalRequired ? { approvalRequired: true } : {}),
       ...(catalogService
@@ -1015,7 +1032,7 @@ async function submitCommand(
       rootExecutionId:
         (typeof raw.rootExecutionId === 'string' ? (raw.rootExecutionId as never) : undefined) ??
         result.command.rootExecutionId,
-      tenantId: agent?.tenantId,
+      tenantId: agent?.tenantId ?? submitterTenantId,
       companyId: agent?.companyId,
       ventureId: agent?.ventureId,
       projectId: agent?.projectId,
@@ -3173,6 +3190,57 @@ async function activateImplementationCase(
 // ── Durable outcomes + revenue sessions (ADR-003 host surface) ──────────────
 
 /**
+ * Tenant boundary for outcomes. Outcomes carry no tenant column, so ownership
+ * is derived the same way as for the records they hang off:
+ *  - runId → the run's Execution Object tenant (same rule as execution reads:
+ *    an execution owned by another tenant is DENY; an untenanted legacy one is
+ *    not);
+ *  - missionId → the mission must be one of the caller tenant's missions (same
+ *    rule as PATCH /v1/missions/:id).
+ * The x-aion-tenant-id header is required and must be within the Principal's
+ * bound tenants.
+ */
+async function assertOutcomeTenantAccess(
+  cp: ControlPlane,
+  req: IncomingMessage,
+  scope: { runId?: string; missionId?: string },
+): Promise<GatewayResponse | null> {
+  const callerTenant = callerTenantId(req);
+  if (!callerTenant) {
+    return jsonError(
+      403,
+      'tenant_required',
+      'x-aion-tenant-id header is required for outcomes',
+    );
+  }
+  const principal = principalContext.getStore() ?? null;
+  const tenantDenied = assertPrincipalTenantAccess(principal, callerTenant, { requireTenant: true });
+  if (tenantDenied) return authDeniedResponse(tenantDenied);
+
+  if (scope.runId) {
+    const execution = await cp.dataLayer.executions.getByRunId(scope.runId as never);
+    if (execution?.tenantId && execution.tenantId !== callerTenant) {
+      return jsonError(
+        403,
+        'tenant_isolation_denied',
+        `caller tenant ${callerTenant} cannot access outcomes for run ${scope.runId}`,
+      );
+    }
+  }
+  if (scope.missionId) {
+    const tenantMissions = await cp.dataLayer.missions.listForTenant(callerTenant);
+    if (!tenantMissions.some((m) => m.missionId === scope.missionId)) {
+      return jsonError(
+        403,
+        'tenant_isolation_denied',
+        `caller tenant ${callerTenant} cannot access outcomes for mission ${scope.missionId}`,
+      );
+    }
+  }
+  return null;
+}
+
+/**
  * Create a durable business outcome via Data. When an Execution Object already
  * exists for the run and has no outcomeId, link the minted id (field already
  * on the Execution Object contract — no schema invention).
@@ -3180,6 +3248,7 @@ async function activateImplementationCase(
 async function createOutcome(
   body: unknown,
   cp: ControlPlane,
+  req: IncomingMessage,
 ): Promise<GatewayResponse> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return jsonError(400, 'invalid_body', 'outcome body must be a JSON object');
@@ -3217,6 +3286,11 @@ async function createOutcome(
   ) {
     return jsonError(400, 'invalid_metadata', 'metadata must be a JSON object when provided');
   }
+  const denied = await assertOutcomeTenantAccess(cp, req, {
+    runId: runParsed.data,
+    ...(missionId ? { missionId } : {}),
+  });
+  if (denied) return denied;
 
   const outcome = await cp.dataLayer.outcomes.create({
     runId: runParsed.data,
@@ -3250,6 +3324,7 @@ async function createOutcome(
 async function getOutcome(
   outcomeIdRaw: string,
   cp: ControlPlane,
+  req: IncomingMessage,
 ): Promise<GatewayResponse> {
   const parsed = OutcomeId.safeParse(outcomeIdRaw);
   if (!parsed.success) {
@@ -3259,10 +3334,19 @@ async function getOutcome(
   if (!outcome) {
     return jsonError(404, 'outcome_not_found', `outcome ${outcomeIdRaw} not found`);
   }
+  const denied = await assertOutcomeTenantAccess(cp, req, {
+    runId: outcome.runId,
+    ...(outcome.missionId ? { missionId: outcome.missionId } : {}),
+  });
+  if (denied) return denied;
   return { status: 200, body: { outcome } };
 }
 
-async function listOutcomes(url: string, cp: ControlPlane): Promise<GatewayResponse> {
+async function listOutcomes(
+  url: string,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
   const params = new URL(url, 'http://localhost').searchParams;
   const runIdRaw = params.get('runId');
   const missionIdRaw = params.get('missionId');
@@ -3278,6 +3362,8 @@ async function listOutcomes(url: string, cp: ControlPlane): Promise<GatewayRespo
     if (!parsed.success) {
       return jsonError(400, 'invalid_run_id', 'runId must be a Core RunId');
     }
+    const denied = await assertOutcomeTenantAccess(cp, req, { runId: parsed.data });
+    if (denied) return denied;
     const outcomes = await cp.dataLayer.outcomes.listByRun(parsed.data);
     return { status: 200, body: { outcomes, count: outcomes.length } };
   }
@@ -3286,6 +3372,8 @@ async function listOutcomes(url: string, cp: ControlPlane): Promise<GatewayRespo
     if (!parsed.success) {
       return jsonError(400, 'invalid_mission_id', 'missionId must be a Core MissionId');
     }
+    const denied = await assertOutcomeTenantAccess(cp, req, { missionId: parsed.data });
+    if (denied) return denied;
     const outcomes = await cp.dataLayer.outcomes.listByMission(parsed.data);
     return { status: 200, body: { outcomes, count: outcomes.length } };
   }
@@ -3300,6 +3388,7 @@ async function patchOutcome(
   outcomeIdRaw: string,
   body: unknown,
   cp: ControlPlane,
+  req: IncomingMessage,
 ): Promise<GatewayResponse> {
   const parsed = OutcomeId.safeParse(outcomeIdRaw);
   if (!parsed.success) {
@@ -3346,6 +3435,15 @@ async function patchOutcome(
   if (Object.keys(patch).length === 0) {
     return jsonError(400, 'empty_patch', 'outcome patch must include at least one field');
   }
+  const existing = await cp.dataLayer.outcomes.get(parsed.data);
+  if (!existing) {
+    return jsonError(404, 'outcome_not_found', `outcome ${outcomeIdRaw} not found`);
+  }
+  const denied = await assertOutcomeTenantAccess(cp, req, {
+    runId: existing.runId,
+    ...(existing.missionId ? { missionId: existing.missionId } : {}),
+  });
+  if (denied) return denied;
   const outcome = await cp.dataLayer.outcomes.update(parsed.data, patch);
   return { status: 200, body: { outcome } };
 }
