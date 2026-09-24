@@ -114,6 +114,9 @@ import {
   newRunId,
   recommendRoute,
   type AgentActor,
+  type ApprovalRequest,
+  type ExecutionObject,
+  type ExecutionResult,
   type AutonomyEnvironment,
   type CommandInput,
   type RiskLevel,
@@ -182,6 +185,53 @@ async function seedDurableOutcome(
     outcomeId: outcome.outcomeId,
     outcomeReference: toOutcomeReference(outcome),
   };
+}
+
+/**
+ * Operator Loop v1 — stamp the approval with the execution it gates, the
+ * caller tenant, and the mission, so an approval row alone answers "what did
+ * this decision cause". Core's ApprovalGate accepts this binding but the
+ * orchestrator does not pass it; fill only fields that are still missing.
+ */
+async function bindApprovalToExecution(
+  cp: ControlPlane,
+  approval: ApprovalRequest,
+  binding: { executionId?: string; tenantId?: string; missionId?: string },
+): Promise<ApprovalRequest> {
+  const patch: Partial<ApprovalRequest> = {
+    ...(!approval.executionId && binding.executionId
+      ? { executionId: binding.executionId as ApprovalRequest['executionId'] }
+      : {}),
+    ...(!approval.tenantId && binding.tenantId ? { tenantId: binding.tenantId } : {}),
+    ...(!approval.missionId && binding.missionId
+      ? { missionId: binding.missionId as ApprovalRequest['missionId'] }
+      : {}),
+  };
+  if (Object.keys(patch).length === 0) return approval;
+  const bound: ApprovalRequest = { ...approval, ...patch };
+  await cp.dataLayer.approvals.save(bound);
+  return bound;
+}
+
+/**
+ * Operator Loop v1 — a failed execution must say why on the Execution Object
+ * itself (the error was previously only on the `execution.failed` event).
+ */
+function failureAuditEntry(
+  status: string,
+  result: ExecutionResult | undefined,
+  at: string,
+): ExecutionObject['auditTrace'] {
+  if (status !== 'failed') return [];
+  return [
+    {
+      at: result?.completedAt ?? at,
+      event: 'execution.failed',
+      detail: result?.error
+        ? { executor: result.executor, error: result.error }
+        : { executor: result?.executor ?? null, error: { code: 'no_error_reported' } },
+    },
+  ];
 }
 
 function jsonError(status: number, code: string, message: string): GatewayResponse {
@@ -972,6 +1022,18 @@ async function submitCommand(
       ...(revenueAttributed !== undefined ? { revenueAttributed } : {}),
       ...(outcomeSummary !== undefined ? { outcomeSummary } : {}),
       ...(seededOutcome ? { outcomeId: seededOutcome.outcomeId as never } : {}),
+      ...(result.status === 'failed'
+        ? {
+            auditTrace: [
+              {
+                at: result.run.createdAt,
+                event: 'execution.created',
+                detail: { runId: result.run.runId, state: result.run.state },
+              },
+              ...failureAuditEntry(result.status, result.result, result.run.updatedAt),
+            ],
+          }
+        : {}),
     });
     const persisted = await persistExecutionWithTrustScore(
       (e) => cp.dataLayer.executions.save(e),
@@ -1007,6 +1069,14 @@ async function submitCommand(
     const outcomeReference =
       seededOutcome?.outcomeReference ?? result.outcomeReference;
 
+    const approval = result.approval
+      ? await bindApprovalToExecution(cp, result.approval, {
+          executionId: persisted.executionId,
+          tenantId: persisted.tenantId,
+          missionId: result.run.missionId,
+        })
+      : undefined;
+
     return {
       status: result.status === 'denied' ? 403 : result.status === 'awaiting_approval' ? 202 : 200,
       body: {
@@ -1015,7 +1085,7 @@ async function submitCommand(
         execution: persisted,
         decision: result.decision,
         ...(result.result ? { result: result.result } : {}),
-        ...(result.approval ? { approval: result.approval } : {}),
+        ...(approval ? { approval } : {}),
         ...(outcomeReference ? { outcomeReference } : {}),
         ...(catalogService
           ? {
@@ -1175,6 +1245,7 @@ async function decideApproval(
             : {}),
         },
       },
+      ...failureAuditEntry(result.status, result.result, result.run.updatedAt),
       ...(seededOutcome
         ? [
             {
@@ -1199,6 +1270,16 @@ async function decideApproval(
       computedAt: result.run.updatedAt,
     },
   );
+
+  // Backfill the approval → execution link for gates requested before binding existed.
+  const decided = await cp.dataLayer.approvals.get(approvalId as never);
+  if (decided) {
+    await bindApprovalToExecution(cp, decided, {
+      executionId: persisted.executionId,
+      tenantId: persisted.tenantId,
+      missionId: result.run.missionId,
+    });
+  }
 
   logger.info('gateway_approval_decided', {
     operation: 'POST /v1/approvals/:id/decision',
