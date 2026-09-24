@@ -277,7 +277,7 @@ export async function handleGatewayRequest(
     }
 
     if (method === 'POST' && path === '/v1/missions/run') {
-      return await runMission(await readJsonBody(req), cp, logger);
+      return await runMission(await readJsonBody(req), cp, logger, principal, req);
     }
 
     if (method === 'GET' && path === '/v1/missions') {
@@ -2360,6 +2360,8 @@ async function runMission(
   body: unknown,
   cp: ControlPlane,
   logger: Logger,
+  principal: Principal | null,
+  req: IncomingMessage,
 ): Promise<GatewayResponse> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return jsonError(400, 'invalid_body', 'mission run body must be a JSON object');
@@ -2370,8 +2372,24 @@ async function runMission(
   if (!actorParsed.success) {
     return jsonError(400, 'invalid_actor', 'actor must satisfy the Core Actor contract');
   }
-  const actor = actorParsed.data;
-  await cp.dataLayer.actors.save(actor);
+
+  // Identity plane (same as POST /v1/commands): durable Actor grants win over
+  // the body, and a principal can only act as its bound actor — the body can
+  // never overwrite a registered actor's permissions, tenant or risk ceiling.
+  const resolved = await resolveDurableActor(cp, actorParsed.data, principal, cp.auth.mode);
+  if (!resolved.ok) return authDeniedResponse(resolved);
+  const actor = resolved.actor;
+
+  // Operator Loop: human/system actors take the caller's tenant (bound to the
+  // Principal) so step executions and their approvals are tenant-scoped.
+  let submitterTenantId: string | undefined;
+  if (actor.actorType !== 'agent') {
+    submitterTenantId = callerTenantId(req);
+    const tenantDenied = assertPrincipalTenantAccess(principal, submitterTenantId, {
+      requireTenant: false,
+    });
+    if (tenantDenied) return authDeniedResponse(tenantDenied);
+  }
 
   let missionId: string | undefined =
     typeof raw.missionId === 'string' ? raw.missionId : undefined;
@@ -2471,6 +2489,13 @@ async function runMission(
       ? (raw.stepPayloads as Record<string, Record<string, unknown>>)
       : undefined;
 
+  const runMetadata: Record<string, unknown> = {
+    ...(raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
+      ? (raw.metadata as Record<string, unknown>)
+      : {}),
+    ...(submitterTenantId ? { tenantId: submitterTenantId } : {}),
+  };
+
   const result = await cp.missionOrchestrator.run({
     missionId,
     workflowId,
@@ -2486,9 +2511,7 @@ async function runMission(
     ...(typeof raw.requestIdPrefix === 'string'
       ? { requestIdPrefix: raw.requestIdPrefix }
       : {}),
-    ...(raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
-      ? { metadata: raw.metadata as Record<string, unknown> }
-      : {}),
+    ...(Object.keys(runMetadata).length > 0 ? { metadata: runMetadata } : {}),
   });
 
   const agent = actor.actorType === 'agent' ? (actor as AgentActor) : undefined;
@@ -2502,7 +2525,7 @@ async function runMission(
       executionId: step.executionId,
       parentExecutionId: step.parentExecutionId,
       rootExecutionId: step.rootExecutionId,
-      tenantId: agent?.tenantId,
+      tenantId: agent?.tenantId ?? submitterTenantId,
       companyId: agent?.companyId,
       ventureId: agent?.ventureId,
       projectId: agent?.projectId,
@@ -2523,6 +2546,13 @@ async function runMission(
         gateRequired: step.status === 'awaiting_approval',
       },
     );
+    if (step.orchestration.approval) {
+      await bindApprovalToExecution(cp, step.orchestration.approval, {
+        executionId: persisted.executionId,
+        tenantId: persisted.tenantId,
+        missionId: step.orchestration.run.missionId,
+      });
+    }
     persistedSteps.push({
       stepIndex: step.stepIndex,
       stepName: step.step.name,
