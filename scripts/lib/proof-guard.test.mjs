@@ -73,7 +73,8 @@ test('live: refuses a known PRODUCTION location even if allowlisted (additive de
 test('live: refuses a known PRODUCTION record id', () =>
   refused(run('live-capability', { ...LIVE(), AION_PRODUCTION_GHL_RECORD_SHA256: sha('TEST_OPP_1') }), /PRODUCTION record id/));
 test('live: refuses production tenant aion-systems', () => refused(run('live-capability', { ...LIVE(), GHL_ACCEPTANCE_TENANT: 'aion-systems' }), /production tenant/));
-test('live: refuses a production runtime host', () => refused(run('live-capability', { ...LIVE(), AION_RUNTIME_URL: 'https://runtime.aionsystems.ai' }), /production host/));
+test('live: refuses a production runtime host', () => refused(run('live-capability', { ...LIVE(), AION_RUNTIME_URL: 'https://runtime.srv1655818.hstgr.cloud' }), /production host/));
+test('live: refuses the production copilot host', () => refused(run('live-capability', { ...LIVE(), AION_RUNTIME_URL: 'https://copilot.runtime.srv1655818.hstgr.cloud' }), /production host/));
 test('live: refuses a non-loopback runtime that is not allowlisted', () => refused(run('live-capability', { ...LIVE(), AION_RUNTIME_URL: 'https://example.invalid' }), /loopback or listed/));
 test('live: refuses GHL_API_BASE_URL', () => refused(run('live-capability', { ...LIVE(), GHL_API_BASE_URL: base }), /GHL_API_BASE_URL/));
 test('live: refuses ambiguous credential aliases', () => refused(run('live-capability', { ...LIVE(), AION_GHL_API_KEY: 'different' }), /disagree/));
@@ -113,7 +114,7 @@ test('structural: every script that starts a runtime, or is named proof/acceptan
 test('structural: no proof source contains a production default (tenant, runtime URL)', () => {
   for (const f of ['src/ghl-live-capability-proof.ts', 'src/ghl-live-acceptance.ts', 'src/revenue-workflow-durable-proof-matrix.ts']) {
     const s = fs.readFileSync(path.join(root, f), 'utf8');
-    assert.ok(!/'aion-systems'/.test(s) && !/srv1655818|aionsystems\.ai/.test(s), `${f} still contains a production default`);
+    assert.ok(!/'aion-systems'/.test(s) && !/srv1655818/.test(s), `${f} still contains a production default`);
   }
 });
 for (const f of shFiles.filter((x) => /proof|acceptance|attack-suite|certification/.test(x))) {

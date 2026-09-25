@@ -6,8 +6,7 @@
   ],
   "runtimeHosts": [
     "runtime.srv1655818.hstgr.cloud",
-    "runtime.aionsystems.ai",
-    "copilot.aionsystems.ai"
+    "copilot.runtime.srv1655818.hstgr.cloud"
   ],
   "sha256": {
     "ghlLocationIds": [
