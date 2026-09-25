@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import type { IncomingMessage } from 'node:http';
 import {
   createHumanActor,
+  createAgentActor,
   capability,
   newApprovalId,
   newCommandId,
@@ -54,6 +55,7 @@ function buildControlPlane() {
   const approvals = new Map<string, ApprovalRequest>();
   const executions = new Map<string, Record<string, unknown>>();
   const orchestratorActors: Actor[] = [];
+  const missionInputs: Record<string, unknown>[] = [];
 
   const cp = {
     dataLayer: {
@@ -63,6 +65,9 @@ function buildControlPlane() {
         },
         async save(a: Actor) {
           actors.set(a.actorId, a);
+        },
+        async list() {
+          return [...actors.values()];
         },
       },
       executions: {
@@ -83,8 +88,9 @@ function buildControlPlane() {
       },
     },
     missionOrchestrator: {
-      async run(input: { actor: Actor; missionId?: string }) {
+      async run(input: { actor: Actor; missionId?: string; metadata?: Record<string, unknown> }) {
         orchestratorActors.push(input.actor);
+        missionInputs.push(input as Record<string, unknown>);
         const now = new Date().toISOString();
         const run = {
           runId: newRunId(),
@@ -131,7 +137,7 @@ function buildControlPlane() {
     auth: { mode: 'open' as const, apiKeys: [] },
   } as unknown as ControlPlane;
 
-  return { cp, actors, approvals, executions, orchestratorActors };
+  return { cp, actors, approvals, executions, orchestratorActors, missionInputs };
 }
 
 function requireAuth(cp: ControlPlane, actorId: string, tenantIds: string[]) {
@@ -213,6 +219,8 @@ test('C: human-run mission stamps the caller tenant and binds the gated step app
   assert.equal(res?.status, 202, JSON.stringify(res?.body));
   const step = (res!.body as { steps: { executionId: string; approvalId: string }[] }).steps[0]!;
   assert.equal(executions.get(step.executionId)?.['tenantId'], 'tenant_console');
+  assert.ok((executions.get(step.executionId)?.['auditTrace'] as Array<{ event: string }> | undefined)
+    ?.some((entry) => entry.event === 'approval.requested'));
   const approval = approvals.get(step.approvalId)!;
   assert.equal(approval.executionId, step.executionId);
   assert.equal(approval.tenantId, 'tenant_console');
@@ -238,4 +246,54 @@ test('D: tenant header outside the principal binding is denied', async () => {
   assert.equal(res?.status, 403, JSON.stringify(res?.body));
   assert.equal((res?.body as { error: string }).error, 'tenant_forbidden');
   assert.equal(orchestratorActors.length, 0, 'nothing ran');
+});
+
+test('E: operator delegates a mission only to a registered agent in the requested tenant', async () => {
+  const { cp, actors, orchestratorActors } = buildControlPlane();
+  const operator = createHumanActor({ name: 'Console Operator', permissions: [] });
+  const agent = createAgentActor({
+    name: 'Registered Revenue Agent', purpose: 'Operate tenant revenue workflow',
+    owner: 'revenue', tenantId: 'tenant_a', permissions: [CAP],
+  });
+  actors.set(operator.actorId, operator);
+  actors.set(agent.actorId, agent);
+  requireAuth(cp, operator.actorId, ['tenant_a']);
+  const headers = { authorization: 'Bearer tok_mission_run_fixture', 'x-aion-tenant-id': 'tenant_a' };
+
+  const listed = await handleGatewayRequest('GET', '/v1/actors', mockReq(undefined, headers), cp, logger);
+  assert.equal(listed?.status, 200);
+  assert.equal((listed!.body as { count: number }).count, 1);
+
+  const claimed = { ...agent, permissions: [CAP, capability('production.deploy')] } as Actor;
+  const launched = await handleGatewayRequest(
+    'POST', '/v1/missions/run', mockReq(runBody(claimed), headers), cp, logger,
+  );
+  assert.equal(launched?.status, 202, JSON.stringify(launched?.body));
+  assert.deepEqual(orchestratorActors[0]?.permissions, [CAP]);
+
+  const wrongTenant = await handleGatewayRequest(
+    'POST', '/v1/missions/run',
+    mockReq(runBody(claimed), { ...headers, 'x-aion-tenant-id': 'tenant_b' }), cp, logger,
+  );
+  assert.equal(wrongTenant?.status, 403);
+});
+
+test('F: operator-loop launch persists continuation payload only when explicitly enabled', async () => {
+  const { cp, missionInputs } = buildControlPlane();
+  const actor = createHumanActor({ name: 'Fixture Operator', permissions: [CAP] });
+  const payloads = { next: { contactId: 'contact_fixture' } };
+  await handleGatewayRequest('POST', '/v1/missions/run', mockReq({
+    ...runBody(actor), stepPayloads: payloads,
+    metadata: { operatorLoopAutoContinue: true },
+  }), cp, logger);
+  const enabled = missionInputs[0]?.['metadata'] as Record<string, unknown>;
+  assert.deepEqual((enabled['operatorLoopContinuation'] as Record<string, unknown>)['stepPayloads'], payloads);
+  assert.equal(typeof (enabled['operatorLoopContinuation'] as Record<string, unknown>)['requestIdPrefix'], 'string');
+
+  await handleGatewayRequest('POST', '/v1/missions/run', mockReq({
+    ...runBody(actor), metadata: { operatorLoopContinuation: { forged: true } },
+  }), cp, logger);
+  assert.equal(missionInputs.length, 2);
+  const disabled = (missionInputs[1]?.['metadata'] ?? {}) as Record<string, unknown>;
+  assert.equal(disabled['operatorLoopContinuation'], undefined);
 });

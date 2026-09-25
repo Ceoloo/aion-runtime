@@ -12,6 +12,7 @@
  *                                         (capability or serviceKey)
  *   POST /v1/missions/run                 — Mission 004 multi-step orchestration
  *   GET  /v1/missions                     — Mission 006 tenant mission list
+ *   GET  /v1/actors                       — tenant's registered agents for operator launch
  *   GET  /v1/missions/:missionId          — Mission 006 mission detail (tenant-gated)
  *   PATCH /v1/missions/:missionId         — close / update mission status + metadata
  *                                         (OL-001 terminal outcomes / visible waivers)
@@ -121,6 +122,7 @@ import {
   type CommandInput,
   type RiskLevel,
   type Run,
+  type MissionOrchestrationResult,
 } from '@aion/core';
 import { isDataError, toOutcomeReference } from '@aion/data';
 import type { ControlPlane } from './control-plane.js';
@@ -282,6 +284,10 @@ export async function handleGatewayRequest(
 
     if (method === 'GET' && path === '/v1/missions') {
       return await listMissions(cp, req);
+    }
+
+    if (method === 'GET' && path === '/v1/actors') {
+      return await listTenantAgents(cp, req);
     }
 
     if (method === 'GET' && path === '/v1/economics') {
@@ -953,6 +959,10 @@ async function submitCommand(
       ...(raw.manualAutonomyDemote === true ? { manualAutonomyDemote: true } : {}),
       ...(typeof raw.approvalId === 'string' ? { approvalId: raw.approvalId } : {}),
     };
+    // These fields are minted only by POST /v1/missions/run. A standalone
+    // command must not forge a mission continuation after its gate is decided.
+    delete metadata['operatorLoopContinuation'];
+    delete metadata['missionOrchestration'];
 
     const mintedExecutionId =
       typeof raw.executionId === 'string' && raw.executionId.length > 0
@@ -1205,6 +1215,7 @@ async function decideApproval(
     return jsonError(400, 'invalid_decision', 'decision failed validation');
   }
 
+  const pendingApproval = await cp.dataLayer.approvals.get(approvalId as never);
   const result = await cp.orchestrator.resume(parsed.data);
   const actor = await cp.dataLayer.actors.get(result.run.actorId);
   const agent = actor?.actorType === 'agent' ? actor : undefined;
@@ -1310,6 +1321,68 @@ async function decideApproval(
     ...(persisted.outcomeId ? { outcome_id: persisted.outcomeId } : {}),
   });
 
+  // A mission gate resumes the original run above. Continue its remaining
+  // steps from the durable command snapshot so a human decision advances the
+  // workflow without a second browser-supplied actor or payload.
+  let continuation: Record<string, unknown> | undefined;
+  if (parsed.data.approve && result.status === 'completed' && pendingApproval) {
+    const context = pendingApproval.command.metadata?.['operatorLoopContinuation'];
+    const step = pendingApproval.command.metadata?.['missionOrchestration'];
+    if (
+      context && typeof context === 'object' && !Array.isArray(context) &&
+      step && typeof step === 'object' && !Array.isArray(step) &&
+      pendingApproval.command.missionId && pendingApproval.command.workflowId &&
+      typeof (step as Record<string, unknown>)['stepIndex'] === 'number'
+    ) {
+      const saved = context as Record<string, unknown>;
+      const nextStep = Number((step as Record<string, unknown>)['stepIndex']) + 1;
+      const workflow = await cp.dataLayer.workflows.get(pendingApproval.command.workflowId);
+      if (workflow && nextStep < workflow.steps.length) {
+        const payloads = saved['stepPayloads'];
+        const stepPayloads = payloads && typeof payloads === 'object' && !Array.isArray(payloads)
+          ? payloads as Record<string, Record<string, unknown>> : {};
+        try {
+          const continuingActor = await cp.dataLayer.actors.get(pendingApproval.command.actor.actorId);
+          if (!continuingActor ||
+              (continuingActor.actorType === 'agent' && continuingActor.tenantId !== persisted.tenantId)) {
+            throw new Error('mission actor is unavailable or outside the original tenant');
+          }
+          const continued = await cp.missionOrchestrator.run({
+            missionId: pendingApproval.command.missionId,
+            workflowId: pendingApproval.command.workflowId,
+            actor: continuingActor,
+            resumeFromStep: nextStep,
+            rootExecutionId: persisted.rootExecutionId ?? persisted.executionId,
+            parentExecutionId: persisted.executionId,
+            stepPayloads,
+            ...(typeof saved['requestIdPrefix'] === 'string'
+              ? { requestIdPrefix: saved['requestIdPrefix'] } : {}),
+            metadata: {
+              ...pendingApproval.command.metadata,
+              ...(persisted.tenantId ? { tenantId: persisted.tenantId } : {}),
+            },
+          });
+          const steps = await persistMissionSteps(cp, continued, continuingActor, persisted.tenantId);
+          continuation = {
+            status: continued.status,
+            stoppedAtStep: continued.stoppedAtStep ?? null,
+            rootExecutionId: continued.rootExecutionId,
+            steps,
+          };
+        } catch (err) {
+          logger.error('gateway_mission_continuation_failed', {
+            approval_id: approvalId,
+            mission_id: pendingApproval.command.missionId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          continuation = { status: 'failed', error: 'continuation_failed' };
+        }
+      } else if (workflow) {
+        continuation = { status: 'completed', steps: [] };
+      }
+    }
+  }
+
   return {
     status: result.status === 'denied' ? 403 : 200,
     body: {
@@ -1318,6 +1391,7 @@ async function decideApproval(
       execution: persisted,
       decision: result.decision,
       ...(result.result ? { result: result.result } : {}),
+      ...(continuation ? { continuation } : {}),
       ...(seededOutcome
         ? { outcomeReference: seededOutcome.outcomeReference }
         : result.outcomeReference
@@ -1438,6 +1512,21 @@ async function listMissions(
   }
   const missions = await cp.dataLayer.missions.listForTenant(callerTenant);
   return { status: 200, body: { missions } };
+}
+
+async function listTenantAgents(
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const tenantId = callerTenantId(req);
+  const denied = assertPrincipalTenantAccess(principalContext.getStore() ?? null, tenantId, {
+    requireTenant: true,
+  });
+  if (denied) return authDeniedResponse(denied);
+  const actors = await cp.dataLayer.actors.list();
+  const agents = actors.filter((actor): actor is AgentActor =>
+    actor.actorType === 'agent' && actor.tenantId === tenantId);
+  return { status: 200, body: { agents, count: agents.length } };
 }
 
 /**
@@ -2373,10 +2462,31 @@ async function runMission(
     return jsonError(400, 'invalid_actor', 'actor must satisfy the Core Actor contract');
   }
 
-  // Identity plane (same as POST /v1/commands): durable Actor grants win over
-  // the body, and a principal can only act as its bound actor — the body can
-  // never overwrite a registered actor's permissions, tenant or risk ceiling.
-  const resolved = await resolveDurableActor(cp, actorParsed.data, principal, cp.auth.mode);
+  // Durable Actor grants win over the body. Operator mission delegation is
+  // limited to an existing agent in one of the principal's tenants.
+  const claimedActor = actorParsed.data;
+  // An authenticated operator may launch a mission with an already registered
+  // agent in the same tenant. The persisted agent grants remain authoritative;
+  // a browser-supplied actor cannot mint or enlarge them.
+  const delegated = cp.auth.mode === 'required' && principal?.kind === 'operator' &&
+    claimedActor.actorType === 'agent' && claimedActor.actorId !== principal.actorId;
+  let resolved;
+  if (delegated) {
+    if (!principal.roles.includes('invoke')) {
+      return jsonError(403, 'actor_forbidden', 'operator lacks invoke role');
+    }
+    const existing = await cp.dataLayer.actors.get(claimedActor.actorId);
+    if (!existing || existing.actorType !== 'agent') {
+      return jsonError(403, 'actor_not_registered', 'mission agent must already be registered');
+    }
+    if (!existing.tenantId || !principal.tenantIds.includes(existing.tenantId) ||
+        callerTenantId(req) !== existing.tenantId) {
+      return jsonError(403, 'tenant_forbidden', 'mission agent is outside the operator tenant');
+    }
+    resolved = { ok: true as const, actor: existing, registered: false };
+  } else {
+    resolved = await resolveDurableActor(cp, claimedActor, principal, cp.auth.mode);
+  }
   if (!resolved.ok) return authDeniedResponse(resolved);
   const actor = resolved.actor;
 
@@ -2488,13 +2598,22 @@ async function runMission(
     raw.stepPayloads && typeof raw.stepPayloads === 'object' && !Array.isArray(raw.stepPayloads)
       ? (raw.stepPayloads as Record<string, Record<string, unknown>>)
       : undefined;
+  const metadataInput = raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
+    ? raw.metadata as Record<string, unknown> : {};
+  const autoContinue = metadataInput['operatorLoopAutoContinue'] === true;
+  const requestIdPrefix = typeof raw.requestIdPrefix === 'string'
+    ? raw.requestIdPrefix : autoContinue ? newRequestId() : undefined;
 
   const runMetadata: Record<string, unknown> = {
-    ...(raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
-      ? (raw.metadata as Record<string, unknown>)
-      : {}),
+    ...metadataInput,
     ...(submitterTenantId ? { tenantId: submitterTenantId } : {}),
   };
+  delete runMetadata['operatorLoopContinuation'];
+  // Saved in each governed command snapshot; a later approval has everything
+  // needed to continue the same mission, including after Runtime restarts.
+  if (autoContinue) {
+    runMetadata['operatorLoopContinuation'] = { stepPayloads: stepPayloads ?? {}, requestIdPrefix };
+  }
 
   const result = await cp.missionOrchestrator.run({
     missionId,
@@ -2508,12 +2627,47 @@ async function runMission(
     ...(typeof raw.parentExecutionId === 'string'
       ? { parentExecutionId: raw.parentExecutionId as never }
       : {}),
-    ...(typeof raw.requestIdPrefix === 'string'
-      ? { requestIdPrefix: raw.requestIdPrefix }
-      : {}),
+    ...(requestIdPrefix ? { requestIdPrefix } : {}),
     ...(Object.keys(runMetadata).length > 0 ? { metadata: runMetadata } : {}),
   });
 
+  const persistedSteps = await persistMissionSteps(cp, result, actor, submitterTenantId);
+
+  logger.info('gateway_mission_run', {
+    operation: 'POST /v1/missions/run',
+    mission_id: result.mission.missionId,
+    workflow_id: result.workflow.workflowId,
+    root_execution_id: result.rootExecutionId,
+    status: result.status,
+    steps: String(result.steps.length),
+  });
+
+  return {
+    status:
+      result.status === 'denied'
+        ? 403
+        : result.status === 'awaiting_approval'
+          ? 202
+          : result.status === 'failed'
+            ? 500
+            : 200,
+    body: {
+      status: result.status,
+      rootExecutionId: result.rootExecutionId,
+      stoppedAtStep: result.stoppedAtStep ?? null,
+      steps: persistedSteps,
+      mission: result.mission,
+      workflow: result.workflow,
+    },
+  };
+}
+
+async function persistMissionSteps(
+  cp: ControlPlane,
+  result: MissionOrchestrationResult,
+  actor: Actor,
+  submitterTenantId?: string,
+) {
   const agent = actor.actorType === 'agent' ? (actor as AgentActor) : undefined;
   const persistedSteps = [];
   for (const step of result.steps) {
@@ -2529,7 +2683,23 @@ async function runMission(
       companyId: agent?.companyId,
       ventureId: agent?.ventureId,
       projectId: agent?.projectId,
-      auditTrace: existing?.auditTrace,
+      auditTrace: [
+        ...(existing?.auditTrace ?? []),
+        ...(step.orchestration.approval ? [{
+          at: step.orchestration.approval.requestedAt,
+          event: 'approval.requested',
+          detail: {
+            approvalId: step.orchestration.approval.approvalId,
+            reason: step.orchestration.approval.reason,
+            riskLevel: step.orchestration.approval.riskLevel,
+          },
+        }] : []),
+      ],
+      metadata: {
+        ...(existing?.metadata ?? {}),
+        missionStepIndex: step.stepIndex,
+        missionStepName: step.step.name,
+      },
     });
     const persisted = await persistExecutionWithTrustScore(
       (e) => cp.dataLayer.executions.save(e),
@@ -2568,33 +2738,7 @@ async function runMission(
     });
   }
 
-  logger.info('gateway_mission_run', {
-    operation: 'POST /v1/missions/run',
-    mission_id: result.mission.missionId,
-    workflow_id: result.workflow.workflowId,
-    root_execution_id: result.rootExecutionId,
-    status: result.status,
-    steps: String(result.steps.length),
-  });
-
-  return {
-    status:
-      result.status === 'denied'
-        ? 403
-        : result.status === 'awaiting_approval'
-          ? 202
-          : result.status === 'failed'
-            ? 500
-            : 200,
-    body: {
-      status: result.status,
-      rootExecutionId: result.rootExecutionId,
-      stoppedAtStep: result.stoppedAtStep ?? null,
-      steps: persistedSteps,
-      mission: result.mission,
-      workflow: result.workflow,
-    },
-  };
+  return persistedSteps;
 }
 
 async function listServices(
