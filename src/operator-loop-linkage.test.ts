@@ -17,6 +17,7 @@ import {
   newApprovalId,
   newCommandId,
   newCorrelationId,
+  newExecutionId,
   newOutcomeId,
   newRequestId,
   newRunId,
@@ -332,7 +333,101 @@ test('D: human-submitted gated command takes the caller tenant onto execution + 
   assert.equal(resumed.tenantId, 'tenant_console', 'resumed execution keeps the tenant');
 });
 
-test('E: human submit cannot claim a tenant outside the principal binding', async () => {
+test('E: approval continues the remaining mission step with saved payload and lineage', async () => {
+  const { cp, approvals, executionsByRunId, runsById, approver, worker, newRun } =
+    buildControlPlane({ resume: 'completed' });
+  const gateRun = newRun('awaiting_approval', MISSION);
+  const gateExecutionId = newExecutionId();
+  const rootExecutionId = newExecutionId();
+  const approval: ApprovalRequest = {
+    approvalId: newApprovalId(),
+    runId: gateRun.runId,
+    requestId: gateRun.requestId,
+    missionId: MISSION as ApprovalRequest['missionId'],
+    executionId: gateExecutionId,
+    tenantId: 'tenant_operator',
+    command: {
+      commandId: gateRun.commandId,
+      requestId: gateRun.requestId,
+      missionId: MISSION as never,
+      workflowId: 'wfl_operator_loop_fixture' as never,
+      name: 'lead-to-appointment.opportunity',
+      actor: worker,
+      capability: CAP,
+      payload: { opportunityId: 'opp_real_fixture' },
+      createdAt: gateRun.createdAt,
+      metadata: {
+        missionOrchestration: { stepIndex: 1 },
+        operatorLoopContinuation: {
+          requestIdPrefix: 'ol-test',
+          stepPayloads: { 'follow-up-task': { contactId: 'contact_real_fixture' } },
+        },
+      },
+    },
+    riskLevel: 'R2',
+    reason: 'human gate',
+    status: 'pending',
+    requestedAt: gateRun.createdAt,
+  };
+  approvals.set(approval.approvalId, approval);
+  runsById.set(gateRun.runId, gateRun);
+  executionsByRunId.set(gateRun.runId, {
+    executionId: gateExecutionId,
+    runId: gateRun.runId,
+    rootExecutionId,
+    tenantId: 'tenant_operator',
+    auditTrace: [],
+  });
+  let resumeInput: Record<string, unknown> | undefined;
+  (cp.dataLayer as unknown as Record<string, unknown>)['workflows'] = {
+    async get() { return { steps: [{}, {}, {}] }; },
+  };
+  (cp as unknown as Record<string, unknown>)['missionOrchestrator'] = {
+    async run(input: Record<string, unknown>) {
+      resumeInput = input;
+      const run = { ...newRun('completed', MISSION), workflowId: 'wfl_operator_loop_fixture' };
+      return {
+        status: 'completed',
+        mission: { missionId: MISSION },
+        workflow: { workflowId: 'wfl_operator_loop_fixture' },
+        rootExecutionId,
+        steps: [{
+          stepIndex: 2,
+          step: { name: 'follow-up-task', capability: 'crm.task.create' },
+          status: 'completed',
+          executionId: newExecutionId(),
+          parentExecutionId: gateExecutionId,
+          rootExecutionId,
+          orchestration: {
+            run,
+            result: {
+              status: 'succeeded', executor: 'ghl', startedAt: run.createdAt,
+              completedAt: run.updatedAt, durationMs: 1, cost: { units: 1 }, metadata: {},
+            },
+          },
+        }],
+      };
+    },
+  };
+
+  const res = await handleGatewayRequest(
+    'POST', `/v1/approvals/${approval.approvalId}/decision`,
+    mockReq({ approve: true, decidedBy: approver.actorId, actor: approver }),
+    cp, logger,
+  );
+  assert.equal(res?.status, 200, JSON.stringify(res?.body));
+  const continuation = (res!.body as { continuation?: { status: string; steps: unknown[] } }).continuation;
+  assert.equal(continuation?.status, 'completed');
+  assert.equal(continuation?.steps.length, 1);
+  assert.equal(resumeInput?.['resumeFromStep'], 2);
+  assert.equal(resumeInput?.['rootExecutionId'], rootExecutionId);
+  assert.equal(resumeInput?.['parentExecutionId'], gateExecutionId);
+  assert.deepEqual(resumeInput?.['stepPayloads'], {
+    'follow-up-task': { contactId: 'contact_real_fixture' },
+  });
+});
+
+test('F: human submit cannot claim a tenant outside the principal binding', async () => {
   const { cp, approvals, worker } = buildControlPlane({ resume: 'completed' });
   (cp as { auth: ControlPlane['auth'] }).auth = {
     mode: 'required',
