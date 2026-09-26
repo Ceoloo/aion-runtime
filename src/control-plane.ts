@@ -26,6 +26,7 @@ import type {
   RiskLevel,
 } from '@aion/core';
 import { createDataLayer, type DataLayer } from '@aion/data';
+import { currentTenantId } from './tenant-context.js';
 import type { RuntimeConfig } from './config.js';
 import type { GatewayAuthConfig } from './auth/types.js';
 import { GhlAdapter, MISSION_009_CAPABILITIES, createGhlBackendFromEnv } from './adapters/ghl/index.js';
@@ -166,6 +167,8 @@ export function buildControlPlane(
     maxConnections: 5,
     connectionTimeoutMs: 5000,
     statementTimeoutMs: 15000,
+    // Tenant RLS (aion-data 0010): every query carries the request's tenant.
+    tenantContext: currentTenantId,
   });
 
   dataLayer.pool.on('error', (err: Error) => {

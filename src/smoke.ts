@@ -12,6 +12,7 @@
 import { createAgentActor, createExecutionObject } from '@aion/core';
 import type { ControlPlane } from './control-plane.js';
 import { SMOKE_CAPABILITY } from './control-plane.js';
+import { runWithTenant } from './tenant-context.js';
 
 export interface SmokeResult {
   ok: boolean;
@@ -20,14 +21,22 @@ export interface SmokeResult {
   detail?: string;
 }
 
+const SMOKE_TENANT = 'aion-platform';
+
 export async function runSmoke(cp: ControlPlane): Promise<SmokeResult> {
+  // Outside a request there is no tenant; bind the smoke agent's own so its
+  // execution row passes tenant RLS (aion-data 0010).
+  return runWithTenant(SMOKE_TENANT, () => runSmokeInTenant(cp));
+}
+
+async function runSmokeInTenant(cp: ControlPlane): Promise<SmokeResult> {
   const actor = createAgentActor({
     name: 'InfraSmokeAgent',
     purpose: 'Phase 3 deployability self-check — non-destructive.',
     owner: 'aion-infra',
     domain: 'infra',
     role: 'smoke',
-    tenantId: 'aion-platform',
+    tenantId: SMOKE_TENANT,
     permissions: [SMOKE_CAPABILITY],
     maxRiskLevel: 'R1',
     autonomyLevel: 'L1',
