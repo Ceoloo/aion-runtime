@@ -83,7 +83,9 @@ Backend evidence must identify `ghl-live`.
 ### Assignee
 
 - Task create accepts optional assignee fields in payload; GHL task `dueDate`
-  defaults to +24h when omitted on the live backend.
+  defaults to +24h when omitted on the live backend. Live LeadConnector also
+  requires `completed` (boolean); the adapter defaults it to `false` when
+  omitted.
 
 ## Durability contract
 
