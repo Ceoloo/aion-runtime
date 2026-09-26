@@ -170,7 +170,7 @@ async function certRegressionAndCrossDomain(client: RuntimeClient): Promise<void
     name: 'platform-v01.cert.revenue-r1',
     actor: revenue,
     serviceKey: SERVICE_REVENUE_R1,
-    requestId: `cert-rev-r1-${Date.now()}`,
+    requestId: `req_cert-rev-r1-${Date.now()}`,
     payload: { cert: 'regression', domain: 'revenue' },
   })) as CommandResponse;
   if (rev.status !== 'completed') {
@@ -186,7 +186,7 @@ async function certRegressionAndCrossDomain(client: RuntimeClient): Promise<void
     name: 'platform-v01.cert.media-r1',
     actor: media,
     serviceKey: SERVICE_MEDIA_R1,
-    requestId: `cert-med-r1-${Date.now()}`,
+    requestId: `req_cert-med-r1-${Date.now()}`,
     payload: { cert: 'cross-domain', domain: 'media', venture: 'g-star' },
   })) as CommandResponse;
   if (med.status !== 'completed') {
@@ -230,7 +230,7 @@ async function certGovernanceAndEconomics(client: RuntimeClient): Promise<void> 
       name: 'platform-v01.cert.governance-deny',
       actor: mediaOnly,
       serviceKey: SERVICE_REVENUE_R1,
-      requestId: `cert-deny-${Date.now()}`,
+      requestId: `req_cert-deny-${Date.now()}`,
     })) as CommandResponse;
     if (denied.status !== 'denied') {
       fail('CERT-GOVERNANCE', `expected denied, got ${denied.status}`);
@@ -291,7 +291,7 @@ async function approveOnce(
   payload: Record<string, unknown>,
   pass: string,
 ): Promise<number> {
-  const requestId = `${name}-${Date.now()}`;
+  const requestId = `req_${name}-${Date.now()}`;
   const paused = (await client.submitCommand({
     name,
     actor,
@@ -306,7 +306,12 @@ async function approveOnce(
   const runId = paused.run?.runId;
   if (!approvalId || !runId) fail(pass, `${serviceKey}: missing approvalId/runId`);
 
-  const resumed = (await client.decideApproval(approvalId, {
+  // Decide in the agent's tenant: under tenant RLS a headerless decision
+  // only sees tenant-less approvals (this cert spans two tenants).
+  const gate = actor.tenantId
+    ? new RuntimeClient({ baseUrl: BASE_URL, tenantId: actor.tenantId })
+    : client;
+  const resumed = (await gate.decideApproval(approvalId, {
     approve: true,
     decidedBy: approver.actorId,
     note: `platform-v01 ${serviceKey}`,
@@ -326,14 +331,14 @@ async function certAttribution(client: RuntimeClient): Promise<void> {
     name: 'platform-v01.cert.attr-revenue',
     actor: revenue,
     serviceKey: SERVICE_REVENUE_R1,
-    requestId: `cert-attr-rev-${Date.now()}`,
+    requestId: `req_cert-attr-rev-${Date.now()}`,
     payload: { cert: 'attribution', leadId: 'lead-systems-1' },
   })) as CommandResponse;
   const med = (await client.submitCommand({
     name: 'platform-v01.cert.attr-media',
     actor: media,
     serviceKey: SERVICE_MEDIA_R1,
-    requestId: `cert-attr-med-${Date.now()}`,
+    requestId: `req_cert-attr-med-${Date.now()}`,
     payload: { cert: 'attribution', assetId: 'gstar-clip-1' },
   })) as CommandResponse;
 
@@ -397,7 +402,7 @@ async function certIsolationBaseline(client: RuntimeClient): Promise<void> {
       name: 'platform-v01.cert.isolation-media-to-revenue',
       actor: media,
       serviceKey: SERVICE_REVENUE_R1,
-      requestId: `cert-iso-m2r-${Date.now()}`,
+      requestId: `req_cert-iso-m2r-${Date.now()}`,
       payload: { attempt: 'media→revenue' },
     })) as CommandResponse;
     if (res.status !== 'denied') {
@@ -420,7 +425,7 @@ async function certIsolationBaseline(client: RuntimeClient): Promise<void> {
       name: 'platform-v01.cert.isolation-revenue-to-media',
       actor: revenue,
       serviceKey: SERVICE_MEDIA_R1,
-      requestId: `cert-iso-r2m-${Date.now()}`,
+      requestId: `req_cert-iso-r2m-${Date.now()}`,
       payload: { attempt: 'revenue→media' },
     })) as CommandResponse;
     if (res.status !== 'denied') {
@@ -447,8 +452,8 @@ async function certIsolationBaseline(client: RuntimeClient): Promise<void> {
 async function durabilityPrepare(client: RuntimeClient): Promise<void> {
   const revenue = revenueActor();
   const media = mediaActor();
-  const revReq = process.env.CERT_D_REVENUE_REQUEST_ID ?? `cert-d-rev-${Date.now()}`;
-  const medReq = process.env.CERT_D_MEDIA_REQUEST_ID ?? `cert-d-med-${Date.now()}`;
+  const revReq = process.env.CERT_D_REVENUE_REQUEST_ID ?? `req_cert-d-rev-${Date.now()}`;
+  const medReq = process.env.CERT_D_MEDIA_REQUEST_ID ?? `req_cert-d-med-${Date.now()}`;
 
   const revPaused = (await client.submitCommand({
     name: 'platform-v01.cert.durability-revenue',
@@ -518,13 +523,16 @@ async function durabilityResume(client: RuntimeClient): Promise<void> {
   const revApprover = revenueApprover();
   const medApprover = mediaApprover();
 
-  const revResumed = (await client.decideApproval(revApprovalId, {
+  // Tenant-scoped decisions (tenant RLS: headerless callers see no tenant rows).
+  const revGate = new RuntimeClient({ baseUrl: BASE_URL, tenantId: 'aion-systems' });
+  const medGate = new RuntimeClient({ baseUrl: BASE_URL, tenantId: 'aion-media' });
+  const revResumed = (await revGate.decideApproval(revApprovalId, {
     approve: true,
     decidedBy: revApprover.actorId,
     note: 'platform-v01 durability revenue',
     actor: revApprover,
   })) as CommandResponse;
-  const medResumed = (await client.decideApproval(medApprovalId, {
+  const medResumed = (await medGate.decideApproval(medApprovalId, {
     approve: true,
     decidedBy: medApprover.actorId,
     note: 'platform-v01 durability media',

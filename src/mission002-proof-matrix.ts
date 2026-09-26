@@ -107,7 +107,9 @@ function approverActor() {
 }
 
 async function main(): Promise<void> {
-  const client = new RuntimeClient({ baseUrl: BASE_URL });
+  // Name the tenant (like Mission 001): under tenant RLS a headerless caller
+  // sees only tenant-less rows, so gate decisions must carry the tenant.
+  const client = new RuntimeClient({ baseUrl: BASE_URL, tenantId: 'aion-media' });
   const mode = process.env.PROOF_MODE ?? 'full';
 
   const media = mediaActor();
@@ -155,7 +157,7 @@ async function passA(
     name: 'mission002.pass-a.research',
     actor,
     serviceKey: SERVICE_MEDIA_R1,
-    requestId: `m002-a-${Date.now()}`,
+    requestId: `req_m002-a-${Date.now()}`,
     payload: { proof: 'A', venture: 'g-star' },
   })) as CommandResponse;
 
@@ -177,7 +179,7 @@ async function passB(
       name: 'mission002.pass-b.denied',
       actor,
       serviceKey: SERVICE_MEDIA_R1,
-      requestId: `m002-b-${Date.now()}`,
+      requestId: `req_m002-b-${Date.now()}`,
     })) as CommandResponse;
     if (res.status !== 'denied') fail('B', `expected denied, got ${res.status}`);
     ok('B', `unauthorized Media caller denied (${res.decision?.reason ?? res.status})`);
@@ -195,7 +197,7 @@ async function passC(
   actor: ReturnType<typeof createAgentActor>,
   approver: ReturnType<typeof createHumanActor>,
 ): Promise<void> {
-  const requestId = `m002-c-${Date.now()}`;
+  const requestId = `req_m002-c-${Date.now()}`;
   const paused = (await client.submitCommand({
     name: 'mission002.pass-c.publish',
     actor,
@@ -260,7 +262,7 @@ async function passX(
     name: 'mission002.pass-x.revenue-regression',
     actor,
     serviceKey: SERVICE_REVENUE_R1,
-    requestId: `m002-x-${Date.now()}`,
+    requestId: `req_m002-x-${Date.now()}`,
     payload: { proof: 'X' },
   })) as CommandResponse;
   if (res.status !== 'completed') fail('X', `Revenue regression failed: ${res.status}`);

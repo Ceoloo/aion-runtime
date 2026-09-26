@@ -167,7 +167,7 @@ async function passA(
     name: 'mission001.pass-a.research',
     actor,
     serviceKey: SERVICE_R1,
-    requestId: `proof-a-${Date.now()}`,
+    requestId: `req_proof-a-${Date.now()}`,
     payload: { proof: 'A' },
   })) as CommandResponse;
 
@@ -199,7 +199,7 @@ async function passB(
       name: 'mission001.pass-b.denied',
       actor,
       serviceKey: SERVICE_R1,
-      requestId: `proof-b-${Date.now()}`,
+      requestId: `req_proof-b-${Date.now()}`,
     })) as CommandResponse;
     if (res.status !== 'denied') fail('B', `expected denied status, got ${res.status}`);
     ok(
@@ -220,7 +220,7 @@ async function passC(
   actor: ReturnType<typeof createAgentActor>,
   approver: ReturnType<typeof createHumanActor>,
 ): Promise<void> {
-  const requestId = `proof-c-${Date.now()}`;
+  const requestId = `req_proof-c-${Date.now()}`;
   const paused = (await client.submitCommand({
     name: 'mission001.pass-c.followup',
     actor,
@@ -289,7 +289,7 @@ async function passDPrepare(
   client: RuntimeClient,
   actor: ReturnType<typeof createAgentActor>,
 ): Promise<void> {
-  const requestId = process.env.PROOF_D_REQUEST_ID ?? `proof-d-${Date.now()}`;
+  const requestId = process.env.PROOF_D_REQUEST_ID ?? `req_proof-d-${Date.now()}`;
   const paused = (await client.submitCommand({
     name: 'mission001.pass-d.followup',
     actor,

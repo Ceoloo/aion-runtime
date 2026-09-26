@@ -231,8 +231,11 @@ async function main(): Promise<void> {
     await client.getAutonomyGrant(grant2.grant.grantId, { tenantId: OTHER });
     fail('D', 'cross-tenant grant GET should DENY');
   } catch (err) {
-    if (!(err instanceof RuntimeApiError) || err.status !== 403) {
-      fail('D', `expected 403 cross-tenant, got ${String(err)}`);
+    // Denied either way: 403 when the row is visible but foreign, 404 when
+    // tenant RLS (aion-data 0010) hides a foreign tenant's grant entirely —
+    // the stronger outcome (no existence oracle across tenants).
+    if (!(err instanceof RuntimeApiError) || (err.status !== 403 && err.status !== 404)) {
+      fail('D', `expected 403/404 cross-tenant denial, got ${String(err)}`);
     }
   }
   const noHeader = await fetch(`${BASE_URL}/v1/autonomy/grants`);
