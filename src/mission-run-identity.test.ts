@@ -36,7 +36,7 @@ const logger = new Logger(
 
 const CAP = capability('crm.opportunity.update');
 const MISSION = 'msn_mission_run_fixture';
-const WORKFLOW = 'wfl_mission_run_fixture';
+const WORKFLOW = 'wf_mission_run_fixture';
 
 function mockReq(body?: unknown, headers: Record<string, string> = {}): IncomingMessage {
   const raw = body === undefined ? '' : JSON.stringify(body);

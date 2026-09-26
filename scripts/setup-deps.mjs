@@ -20,14 +20,14 @@ import { fileURLToPath } from 'node:url';
 
 const CORE_REPO = process.env.AION_CORE_REPO ?? 'https://github.com/Ceoloo/aion-core';
 const DATA_REPO = process.env.AION_DATA_REPO ?? 'https://github.com/Ceoloo/aion-data';
-// aion-core tip with AgentTrustScore + ActionTier (PR #24, rebased onto EO pin).
-const CORE_REF = process.env.AION_CORE_REF ?? '72294ec243017fb320f631a98be473a61aeff2c5';
-// aion-data pinned in lockstep with CORE_REF (execution-object base + opportunity entity routing), so
-// seedMission009() seeds all 15 M009 CRM capabilities (was 10). aion-data#18,
-// landed on cursor/execution-object-agent-identity-6743.
-// revenue_sessions (aion-data#19 on main) is overlaid as migration 0011 via
-// scripts/vendor-revenue-sessions.mjs until EO tip absorbs it.
-const DATA_REF = process.env.AION_DATA_REF ?? '60ff3d2459a5c2fff7dcd9b0592af713306716eb';
+// Platform-aligned pins: Core and Data on one reachable lineage. CORE_REF must
+// equal aion-data/scripts/setup-core.mjs CORE_REF and aion-products'
+// scripts/setup-core.sh CORE_SHA — one contract surface across the system.
+// (Replaces the orphaned core 72294ec + side-branch data 60ff3d2 + the
+// revenue_sessions overlay; aion-data's runner reconciles DBs migrated on that
+// old lineage — see aion-data/migrations/README.md.)
+const CORE_REF = process.env.AION_CORE_REF ?? '52ecf40b860ec9e32fe62c3fc8a8252c5ad17157';
+const DATA_REF = process.env.AION_DATA_REF ?? '5da145ae74ea5fa1a6e8deccc129d2f9574f4bc4';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const vendor = resolve(root, 'vendor');
@@ -64,8 +64,6 @@ function main() {
     run(`git clone --quiet ${DATA_REPO} "${dataDir}"`, vendor);
     run(`git fetch --quiet origin ${DATA_REF}`, dataDir);
     run(`git checkout --quiet ${DATA_REF}`, dataDir);
-    // Bridge revenue_sessions (aion-data#19 on main) onto EO pin as 0011.
-    run(`node "${resolve(root, 'scripts/vendor-revenue-sessions.mjs')}"`, root);
     // Reuse the already-built core so data links the same contract build.
     mkdirSync(resolve(dataDir, 'vendor'), { recursive: true });
     cpSync(coreDir, resolve(dataDir, 'vendor', 'aion-core'), { recursive: true });

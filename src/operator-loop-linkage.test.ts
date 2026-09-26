@@ -350,7 +350,7 @@ test('E: approval continues the remaining mission step with saved payload and li
       commandId: gateRun.commandId,
       requestId: gateRun.requestId,
       missionId: MISSION as never,
-      workflowId: 'wfl_operator_loop_fixture' as never,
+      workflowId: 'wf_operator_loop_fixture' as never,
       name: 'lead-to-appointment.opportunity',
       actor: worker,
       capability: CAP,
@@ -385,11 +385,11 @@ test('E: approval continues the remaining mission step with saved payload and li
   (cp as unknown as Record<string, unknown>)['missionOrchestrator'] = {
     async run(input: Record<string, unknown>) {
       resumeInput = input;
-      const run = { ...newRun('completed', MISSION), workflowId: 'wfl_operator_loop_fixture' };
+      const run = { ...newRun('completed', MISSION), workflowId: 'wf_operator_loop_fixture' };
       return {
         status: 'completed',
         mission: { missionId: MISSION },
-        workflow: { workflowId: 'wfl_operator_loop_fixture' },
+        workflow: { workflowId: 'wf_operator_loop_fixture' },
         rootExecutionId,
         steps: [{
           stepIndex: 2,

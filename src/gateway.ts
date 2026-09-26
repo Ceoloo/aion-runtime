@@ -62,6 +62,7 @@
  */
 import type { IncomingMessage } from 'node:http';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { bindRequestTenant, enterRequestTenant } from './tenant-context.js';
 import {
   Actor,
   ApprovalDecision,
@@ -273,6 +274,14 @@ export async function handleGatewayRequest(
     if (!auth.ok) return authDeniedResponse(auth);
     const principal = auth.principal;
     principalContext.enterWith(principal);
+    // Tenant RLS scope: the tenant header, only when the principal may act in
+    // it. Handlers still enforce tenant access; this binds the DB session.
+    const headerTenant = callerTenantId(req);
+    enterRequestTenant(
+      headerTenant && !assertPrincipalTenantAccess(principal, headerTenant, { requireTenant: false })
+        ? headerTenant
+        : undefined,
+    );
 
     if (method === 'POST' && path === '/v1/commands') {
       return await submitCommand(await readJsonBody(req), cp, logger, principal, req);
@@ -727,6 +736,8 @@ async function submitCommand(
         'agent-driven commands require actor.tenantId (Mission 003 isolation)',
       );
     }
+    // Durable agent tenant (never the body's claim) scopes this command's rows.
+    bindRequestTenant(agent.tenantId);
     const claimedAgentId =
       typeof raw.claimedAgentId === 'string' ? raw.claimedAgentId : agent.agentId;
     const resourceTenantId =
@@ -964,6 +975,11 @@ async function submitCommand(
     delete metadata['operatorLoopContinuation'];
     delete metadata['missionOrchestration'];
 
+    const commandTenantId =
+      actor.actorType === 'agent'
+        ? (actor as AgentActor).tenantId
+        : submitterTenantId;
+
     const mintedExecutionId =
       typeof raw.executionId === 'string' && raw.executionId.length > 0
         ? raw.executionId
@@ -998,6 +1014,9 @@ async function submitCommand(
         ? { parentExecutionId: raw.parentExecutionId }
         : {}),
       ...(typeof raw.rootExecutionId === 'string' ? { rootExecutionId: raw.rootExecutionId } : {}),
+      // Effective tenant (durable agent's, else the principal-bound header) —
+      // Core stamps it on the approval at creation (tenant RLS).
+      ...(commandTenantId ? { tenantId: commandTenantId } : {}),
       ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     };
 
@@ -1357,6 +1376,7 @@ async function decideApproval(
             stepPayloads,
             ...(typeof saved['requestIdPrefix'] === 'string'
               ? { requestIdPrefix: saved['requestIdPrefix'] } : {}),
+            ...(persisted.tenantId ? { tenantId: persisted.tenantId } : {}),
             metadata: {
               ...pendingApproval.command.metadata,
               ...(persisted.tenantId ? { tenantId: persisted.tenantId } : {}),
@@ -2489,6 +2509,10 @@ async function runMission(
   }
   if (!resolved.ok) return authDeniedResponse(resolved);
   const actor = resolved.actor;
+  // Durable agent tenant scopes the mission's step rows (tenant RLS).
+  if (actor.actorType === 'agent' && (actor as AgentActor).tenantId) {
+    bindRequestTenant((actor as AgentActor).tenantId);
+  }
 
   // Operator Loop: human/system actors take the caller's tenant (bound to the
   // Principal) so step executions and their approvals are tenant-scoped.
@@ -2628,6 +2652,7 @@ async function runMission(
       ? { parentExecutionId: raw.parentExecutionId as never }
       : {}),
     ...(requestIdPrefix ? { requestIdPrefix } : {}),
+    ...(submitterTenantId ? { tenantId: submitterTenantId } : {}),
     ...(Object.keys(runMetadata).length > 0 ? { metadata: runMetadata } : {}),
   });
 
