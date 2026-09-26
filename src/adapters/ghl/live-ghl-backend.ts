@@ -372,6 +372,10 @@ export class LiveGhlBackend implements GhlBackend {
         const dueDate =
           str(payload['dueDate']) ??
           new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+        // LeadConnector /contacts/:id/tasks requires `completed` as a boolean
+        // (422 Unprocessable Entity when omitted). Default open tasks to false.
+        const completed =
+          typeof payload['completed'] === 'boolean' ? payload['completed'] : false;
         const data = await this.api(
           connection,
           'POST',
@@ -380,6 +384,7 @@ export class LiveGhlBackend implements GhlBackend {
             title: str(payload['title']) ?? 'Follow up',
             body: str(payload['body']),
             dueDate,
+            completed,
           },
         );
         if (!data.ok) return data;
