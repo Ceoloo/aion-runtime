@@ -21,6 +21,11 @@ import { validateGhlPayload } from './payload-validation.js';
 import type { GhlBackend, GhlMutationKind } from './types.js';
 import { isGhlReadAction } from './types.js';
 import { sharedFakeGhlBackend } from './fake-ghl-backend.js';
+import {
+  assessLiveCustomerWrite,
+  isProtectedLiveGhlRecord,
+  rememberLiveFixtureRecord,
+} from './production-write-eligibility.js';
 
 export { GHL_API_VERSION, CRM_CONTACT_UPSERT_MIN_CONFIDENCE, GHL_DISABLED_ACTIONS };
 
@@ -282,6 +287,22 @@ export class GhlAdapter implements ExecutionAdapter {
       };
     }
 
+    const eligibility = assessLiveCustomerWrite({
+      backendName: this.backend.name,
+      action,
+      payload,
+      metadata: request.command.metadata ?? {},
+    });
+    if (!eligibility.eligible) {
+      return fail(
+        this.name,
+        startedAt,
+        eligibility.code ?? 'SYNTHETIC_EVIDENCE_PRODUCTION_BOUNDARY',
+        eligibility.message ??
+          'synthetic evidence is not eligible for a live CRM write',
+      );
+    }
+
     const backendResult = await this.backend.execute({
       tenantId,
       workspaceId,
@@ -349,6 +370,13 @@ export class GhlAdapter implements ExecutionAdapter {
           apiVersion: GHL_API_VERSION,
         },
       };
+    }
+
+    if (
+      eligibility.rememberResource &&
+      !isProtectedLiveGhlRecord(backendResult.externalResourceId)
+    ) {
+      rememberLiveFixtureRecord(backendResult.externalResourceId);
     }
 
     const resultHash = hashExternalResult(backendResult.body);
