@@ -1,9 +1,10 @@
 # OL-001 incident: synthetic evidence crossed the production write boundary
 
-**Status:** open. Runtime ledger and the live CRM note are preserved.
+**Status:** open. The runtime ledger is permanent incident evidence.
 **CRM cleanup:** not performed. This record documents the authorizing path.
 Delete the live note only after that path is reviewed, using the cleanup
-section below. Do not treat this file as the deletion.
+section below. Do not treat this file as the deletion. Removing the note
+from the client CRM does not retire OL-001.
 
 ## What crossed the boundary
 
@@ -75,6 +76,11 @@ metadata unless they also have the execution ledger.
 
 ## What is preserved
 
+OL-001 stays in the engineering incident evidence permanently, including
+after the contaminated note is removed from the client CRM. It is a
+regression case: a later runtime must not be able to reproduce this
+write against a real client record.
+
 Do not delete, as part of cleanup or as part of the code change:
 
 - the OL-001 mission row and its `metadata` (cohort, launch mode,
@@ -85,7 +91,9 @@ Do not delete, as part of cleanup or as part of the code change:
   its provider id is recorded here
 
 Those rows are the incident artifact. They show which actor, capability,
-and idempotency key were allowed to call the live API.
+and idempotency key were allowed to call the live API. The mission,
+executions, approvals, and side-effect ledger remain after the note
+itself is gone.
 
 ## Control added
 
@@ -111,16 +119,33 @@ Synthetic evidence is eligible only when:
   caller-supplied contact id), or
 - the action itself is that fixture create
 
-It is refused with `SYNTHETIC_EVIDENCE_PRODUCTION_BOUNDARY` when the
-target is anything else, and always when the target id hashes to
+It is refused with `SYNTHETIC_TO_PRODUCTION_DENIED` when the target is
+anything else, and always when the target id hashes to
 `PROTECTED_LIVE_GHL_RECORD_SHA256` (kept equal to
-`production-ids.json`). The refusal does not call LeadConnector and
-does not insert a succeeded side-effect row.
+`production-ids.json`). The refusal returns before `backend.execute`,
+so LeadConnector is not called and no succeeded side-effect row is
+inserted.
+
+A payload that is not synthetic does not receive a boundary allow.
+The disposition is `defer-to-policy`: the adapter continues, and the
+ALLOW or DENY already made by `PolicyEngine` stands. A known
+production contact with an ordinary qualification note is that case.
+
+The adapter proof covers four outcomes against a stand-in production
+hash (the suite does not embed a raw client id):
+
+- synthetic metadata and a known production contact → deny
+- a synthetic body and a known production contact → deny
+- synthetic evidence on a contact this process just created at
+  `@example.invalid` → allow that fixture only
+- a non-synthetic note on a production contact → defer to policy, and
+  the live backend is invoked
 
 Reads are unchanged. A stage-only `opportunity.update` whose payload
-is not synthetic text stays eligible, including the live-acceptance
-restart path, because that command is not customer-intelligence text.
-A stage update that carries the incident sentence is refused.
+is not synthetic text stays on the policy decision, including the
+live-acceptance restart path, because that command is not
+customer-intelligence text. A stage update that carries the incident
+sentence is refused.
 
 Fake-backend writes stay eligible. They never reach GHL.
 
@@ -140,7 +165,9 @@ After review of this path, an operator with location access should:
 3. Append here: provider note id, UTC time, and the operator identity.
    Record the contact id as its SHA-256, not the raw id.
 4. Leave the OL-001 mission, executions, approvals, and side-effect
-   ledger in place.
+   ledger in place. That ledger is permanent. Cleanup of the CRM note
+   does not close the incident record and does not authorize another
+   OL-001 acceptance run.
 
 Until that append exists, the live note is still on the client record
 on purpose.

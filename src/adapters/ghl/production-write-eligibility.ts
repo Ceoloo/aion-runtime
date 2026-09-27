@@ -22,8 +22,7 @@ export const PROTECTED_LIVE_GHL_RECORD_SHA256: readonly string[] = [
   'cdfa9019ea6a704d8e098d6a1ff8afe93187d2f328b8973857d485cf066992ef',
 ];
 
-export const SYNTHETIC_EVIDENCE_PRODUCTION_BOUNDARY =
-  'SYNTHETIC_EVIDENCE_PRODUCTION_BOUNDARY';
+export const SYNTHETIC_TO_PRODUCTION_DENIED = 'SYNTHETIC_TO_PRODUCTION_DENIED';
 
 /**
  * Writes that become customer intelligence on a contact: notes, tasks,
@@ -77,8 +76,17 @@ export interface LiveWriteEligibilityInput {
   protectedHashes?: readonly string[];
 }
 
+/**
+ * `defer-to-policy` means this boundary does not decide the write.
+ * Policy already ran; a non-synthetic payload stays on that decision.
+ * `allow-fixture` is the narrow exception for a contact this process
+ * just created. `deny` stops the write before the live API is called.
+ */
+export type LiveWriteDisposition = 'defer-to-policy' | 'allow-fixture' | 'deny';
+
 export interface LiveWriteEligibility {
   eligible: boolean;
+  disposition: LiveWriteDisposition;
   code?: string;
   message?: string;
   /** After a successful create, store the provider id as a fixture target. */
@@ -89,16 +97,16 @@ export function assessLiveCustomerWrite(
   input: LiveWriteEligibilityInput,
 ): LiveWriteEligibility {
   if (input.backendName !== 'ghl-live') {
-    return { eligible: true, rememberResource: false };
+    return defer();
   }
   if (isRead(input.action)) {
-    return { eligible: true, rememberResource: false };
+    return defer();
   }
 
   const metadata = input.metadata ?? {};
   const synthetic = isSyntheticEvidence(input.action, input.payload, metadata);
   if (!synthetic) {
-    return { eligible: true, rememberResource: false };
+    return defer();
   }
 
   const protectedHashes = new Set(
@@ -119,12 +127,17 @@ export function assessLiveCustomerWrite(
     email !== undefined &&
     isFixtureEmail(email)
   ) {
-    return { eligible: true, rememberResource: true };
+    return {
+      eligible: true,
+      disposition: 'allow-fixture',
+      rememberResource: true,
+    };
   }
 
   if (targets.length > 0 && targets.every((id) => fixtureRecordIds.has(id))) {
     return {
       eligible: true,
+      disposition: 'allow-fixture',
       rememberResource:
         input.action === 'opportunity.create' || input.action === 'contact.update',
     };
@@ -136,10 +149,19 @@ export function assessLiveCustomerWrite(
   );
 }
 
+function defer(): LiveWriteEligibility {
+  return {
+    eligible: true,
+    disposition: 'defer-to-policy',
+    rememberResource: false,
+  };
+}
+
 function refuse(message: string): LiveWriteEligibility {
   return {
     eligible: false,
-    code: SYNTHETIC_EVIDENCE_PRODUCTION_BOUNDARY,
+    disposition: 'deny',
+    code: SYNTHETIC_TO_PRODUCTION_DENIED,
     message,
     rememberResource: false,
   };
