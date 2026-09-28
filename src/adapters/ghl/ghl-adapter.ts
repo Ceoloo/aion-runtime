@@ -21,6 +21,12 @@ import { validateGhlPayload } from './payload-validation.js';
 import type { GhlBackend, GhlMutationKind } from './types.js';
 import { isGhlReadAction } from './types.js';
 import { sharedFakeGhlBackend } from './fake-ghl-backend.js';
+import {
+  assessLiveCustomerWrite,
+  isProtectedLiveGhlRecord,
+  rememberLiveFixtureRecord,
+  SYNTHETIC_TO_PRODUCTION_DENIED,
+} from './production-write-eligibility.js';
 
 export { GHL_API_VERSION, CRM_CONTACT_UPSERT_MIN_CONFIDENCE, GHL_DISABLED_ACTIONS };
 
@@ -70,6 +76,11 @@ export const MISSION_009_CAPABILITIES: Capability[] = [
 export interface GhlAdapterDeps {
   sideEffects: PostgresExternalSideEffectRepository;
   backend?: GhlBackend;
+  /**
+   * SHA-256 denylist of live record ids. Defaults to the production set.
+   * Tests pass a stand-in hash so the suite never needs a real contact id.
+   */
+  protectedRecordHashes?: readonly string[];
 }
 
 /**
@@ -84,10 +95,12 @@ export class GhlAdapter implements ExecutionAdapter {
   readonly name = 'ghl-adapter';
   private readonly sideEffects: PostgresExternalSideEffectRepository;
   private readonly backend: GhlBackend;
+  private readonly protectedRecordHashes: readonly string[] | undefined;
 
   constructor(deps: GhlAdapterDeps) {
     this.sideEffects = deps.sideEffects;
     this.backend = deps.backend ?? sharedFakeGhlBackend;
+    this.protectedRecordHashes = deps.protectedRecordHashes;
   }
 
   canHandle(request: ExecutionRequest): boolean {
@@ -282,6 +295,23 @@ export class GhlAdapter implements ExecutionAdapter {
       };
     }
 
+    const eligibility = assessLiveCustomerWrite({
+      backendName: this.backend.name,
+      action,
+      payload,
+      metadata: request.command.metadata ?? {},
+      protectedHashes: this.protectedRecordHashes,
+    });
+    if (!eligibility.eligible) {
+      return fail(
+        this.name,
+        startedAt,
+        eligibility.code ?? SYNTHETIC_TO_PRODUCTION_DENIED,
+        eligibility.message ??
+          'synthetic evidence is not eligible for a live CRM write',
+      );
+    }
+
     const backendResult = await this.backend.execute({
       tenantId,
       workspaceId,
@@ -349,6 +379,16 @@ export class GhlAdapter implements ExecutionAdapter {
           apiVersion: GHL_API_VERSION,
         },
       };
+    }
+
+    if (
+      eligibility.rememberResource &&
+      !isProtectedLiveGhlRecord(
+        backendResult.externalResourceId,
+        this.protectedRecordHashes,
+      )
+    ) {
+      rememberLiveFixtureRecord(backendResult.externalResourceId);
     }
 
     const resultHash = hashExternalResult(backendResult.body);

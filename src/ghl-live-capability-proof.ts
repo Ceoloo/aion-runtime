@@ -4,7 +4,8 @@
  * Gates:
  *   1. Live GHL tenant reads (normalized via adapter / Runtime)
  *   2. Live model structured-output call (OpenRouter / Copilot env)
- *   3. Model-proposed CRM note → gateway write
+ *   3. Model-proposed CRM note → gateway write onto a fixture contact
+ *      created in this run. The read-only client contact is never a note target.
  *   4. R2 approved CRM mutation (opportunity stage) — note.create is R1 ALLOW
  *   5. Exactly-once replay (same idempotency key)
  *   6. Full audit minimum
@@ -48,6 +49,7 @@ const PERMS = [
   'crm.appointment.read',
   'crm.note.create',
   'crm.task.create',
+  'crm.contact.update',
 ].map((n) => capability(n));
 
 interface CommandResponse {
@@ -238,7 +240,11 @@ async function main(): Promise<void> {
   });
   const human = createHumanActor({
     name: 'Live Capability Approver',
-    permissions: [capability('crm.opportunity.update'), capability('crm.note.create')],
+    permissions: [
+      capability('crm.opportunity.update'),
+      capability('crm.note.create'),
+      capability('crm.contact.update'),
+    ],
   });
 
   const report: Record<string, unknown> = {
@@ -291,10 +297,48 @@ async function main(): Promise<void> {
       ? `AION live-capability note — model=${String((modelEv['output'] as Evidence)['decision'])} conf=${String((modelEv['output'] as Evidence)['confidence'])} @ ${new Date().toISOString()}`
       : `AION live-capability note — model_pending @ ${new Date().toISOString()}`;
 
+  // Fixture contact only. Proof metadata makes the note synthetic customer
+  // evidence, which the live adapter refuses on a pre-existing client record.
+  const fixtureTag = Date.now();
+  const fixtureProposed = await submit(
+    client,
+    agent,
+    'live-cap-fixture-contact',
+    'crm.contact.update@1',
+    {
+      email: `aion.live.cap.${fixtureTag}@example.invalid`,
+      firstName: 'AionLive',
+      lastName: `Cap${fixtureTag}`,
+      upsert: true,
+      matchConfidence: 0.95,
+      idempotencyKey: `ghl-live-cap-fixture-${fixtureTag}`,
+    },
+  );
+  if (!awaiting(fixtureProposed)) {
+    fail(
+      'N0',
+      `expected R2 gate on fixture contact: ${JSON.stringify(fixtureProposed).slice(0, 500)}`,
+    );
+  }
+  const fixtureApproval = fixtureProposed.run?.approvalId ?? '';
+  if (!fixtureApproval) fail('N0', 'missing fixture contact approvalId');
+  const fixtureDecided = (await client.decideApproval(fixtureApproval, {
+    approve: true,
+    decidedBy: human.actorId,
+    actor: human,
+    note: 'Live capability — fixture contact for the proof note, not a client record',
+  })) as CommandResponse;
+  if (!succeeded(fixtureDecided) || out(fixtureDecided)['backend'] !== 'ghl-live') {
+    fail('N0', `fixture contact create failed: ${JSON.stringify(fixtureDecided).slice(0, 500)}`);
+  }
+  const fixtureContactId = String(out(fixtureDecided)['externalResourceId'] ?? '');
+  if (!fixtureContactId) fail('N0', 'missing fixture contact id');
+  ok('N0', `fixture contact ${fixtureContactId} (reads still use the client contact)`);
+
   // ── 3–5. Proposed note write + exactly-once replay (R1 ALLOW) ───────────
-  const idemNote = `ghl-live-note-${CONTACT_ID}-${Date.now()}`;
+  const idemNote = `ghl-live-note-${fixtureContactId}-${fixtureTag}`;
   const note1 = await submit(client, agent, 'live-cap-note', 'crm.note.create@1', {
-    contactId: CONTACT_ID,
+    contactId: fixtureContactId,
     body: noteBody,
     idempotencyKey: idemNote,
   });
@@ -311,7 +355,7 @@ async function main(): Promise<void> {
   ok('N1', `note.create sideEffectId=${noteSideEffect} external=${noteExternal}`);
 
   const note2 = await submit(client, agent, 'live-cap-note-replay', 'crm.note.create@1', {
-    contactId: CONTACT_ID,
+    contactId: fixtureContactId,
     body: noteBody,
     idempotencyKey: idemNote,
   });
