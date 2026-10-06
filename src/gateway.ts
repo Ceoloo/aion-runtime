@@ -13,6 +13,14 @@
  *   POST /v1/missions/run                 — Mission 004 multi-step orchestration
  *   GET  /v1/missions                     — Mission 006 tenant mission list
  *   GET  /v1/actors                       — tenant's registered agents for operator launch
+ *   GET  /v1/registry/agents              — AIO-44 Agent Identity Registry list (+ SIS completeness)
+ *   GET  /v1/registry/agents/:actorId     — AIO-44 registry entry detail
+ *   PUT  /v1/registry/agents              — AIO-44 register / update agent
+ *   POST /v1/registry/agents/:id/revoke   — AIO-44 set revocation_state=revoked
+ *   POST /v1/registry/agents/:id/suspend  — AIO-44 set revocation_state=suspended
+ *   POST /v1/registry/agents/:id/reactivate — AIO-44 set revocation_state=active
+ *   GET  /v1/registry/review              — AIO-44 SIS-AG-10 governance review
+ *   GET  /v1/registry/inventory           — AIO-44 SIS-AG-02 inventory export
  *   GET  /v1/missions/:missionId          — Mission 006 mission detail (tenant-gated)
  *   PATCH /v1/missions/:missionId         — close / update mission status + metadata
  *                                         (OL-001 terminal outcomes / visible waivers)
@@ -144,6 +152,16 @@ import {
   isTerminalExecutionStatus,
   persistExecutionWithTrustScore,
 } from './trust-score.js';
+import {
+  exportRegistryInventory,
+  getRegistryAgent,
+  listRegistryAgents,
+  reactivateRegistryAgent,
+  reviewRegistry,
+  revokeRegistryAgent,
+  suspendRegistryAgent,
+  upsertRegistryAgent,
+} from './registry.js';
 
 /** Per-request principal bound at the gateway identity boundary. */
 const principalContext = new AsyncLocalStorage<Principal | null>();
@@ -297,6 +315,56 @@ export async function handleGatewayRequest(
 
     if (method === 'GET' && path === '/v1/actors') {
       return await listTenantAgents(cp, req);
+    }
+
+    if (method === 'GET' && path === '/v1/registry/agents') {
+      return await listRegistryAgents(cp, req, principal);
+    }
+    if (method === 'PUT' && path === '/v1/registry/agents') {
+      return await upsertRegistryAgent(await readJsonBody(req), cp, req, principal);
+    }
+    if (method === 'GET' && path === '/v1/registry/review') {
+      return await reviewRegistry(cp, req, principal, url);
+    }
+    if (method === 'GET' && path === '/v1/registry/inventory') {
+      return await exportRegistryInventory(cp, req, principal);
+    }
+    const registryAgentMatch = /^\/v1\/registry\/agents\/([^/]+)$/.exec(path);
+    if (method === 'GET' && registryAgentMatch) {
+      return await getRegistryAgent(
+        decodeURIComponent(registryAgentMatch[1]!),
+        cp,
+        req,
+        principal,
+      );
+    }
+    const registryRevokeMatch = /^\/v1\/registry\/agents\/([^/]+)\/revoke$/.exec(path);
+    if (method === 'POST' && registryRevokeMatch) {
+      return await revokeRegistryAgent(
+        decodeURIComponent(registryRevokeMatch[1]!),
+        cp,
+        req,
+        principal,
+      );
+    }
+    const registrySuspendMatch = /^\/v1\/registry\/agents\/([^/]+)\/suspend$/.exec(path);
+    if (method === 'POST' && registrySuspendMatch) {
+      return await suspendRegistryAgent(
+        decodeURIComponent(registrySuspendMatch[1]!),
+        cp,
+        req,
+        principal,
+      );
+    }
+    const registryReactivateMatch =
+      /^\/v1\/registry\/agents\/([^/]+)\/reactivate$/.exec(path);
+    if (method === 'POST' && registryReactivateMatch) {
+      return await reactivateRegistryAgent(
+        decodeURIComponent(registryReactivateMatch[1]!),
+        cp,
+        req,
+        principal,
+      );
     }
 
     if (method === 'GET' && path === '/v1/economics') {
@@ -788,6 +856,8 @@ async function submitCommand(
       ...(catalogServiceKey ? { resolvedServiceKey: catalogServiceKey } : {}),
       ...(autonomyGrant ? { autonomyGrant } : {}),
       ...(raw.manualAutonomyDemote === true ? { manualAutonomyDemote: true } : {}),
+      // AIO-44: production auth requires complete SIS-AG-02 for Execute-tier.
+      ...(cp.auth.mode === 'required' ? { requireRegistryCompleteness: true } : {}),
     });
     if (authz.decision === 'DENY') {
       // Persist a denied Execution Object so Mission 005 economics can count

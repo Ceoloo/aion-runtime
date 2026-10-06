@@ -41,7 +41,8 @@
     "test:operator-loop": "npm run build && node --test dist/operator-loop-linkage.test.js",
     "test:mission-run-identity": "npm run build && node --test dist/mission-run-identity.test.js",
     "test:decision-identity": "npm run build && node --test dist/auth/decision-identity.test.js",
-    "test:gateway": "npm run build && node --test dist/auth/decision-identity.test.js dist/outcomes-sessions-gateway.test.js dist/commands-submit-concurrency.test.js dist/auth/identity-plane.test.js dist/trust-score.test.js dist/operator-loop-linkage.test.js dist/mission-run-identity.test.js",
+    "test:gateway": "npm run build && node --test dist/auth/decision-identity.test.js dist/outcomes-sessions-gateway.test.js dist/commands-submit-concurrency.test.js dist/auth/identity-plane.test.js dist/trust-score.test.js dist/operator-loop-linkage.test.js dist/mission-run-identity.test.js dist/registry-gateway.test.js",
+    "test:registry": "npm run build && node --test dist/registry-gateway.test.js",
     "test:proof-safety": "npm run build && node --test dist/adapters/ghl/backend-selection.test.js dist/adapters/ghl/production-write-eligibility.test.js scripts/lib/proof-guard.test.mjs scripts/lib/proof-credential-scope.test.mjs"
   },
   "dependencies": {

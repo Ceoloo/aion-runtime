@@ -42,6 +42,7 @@ export type AuthFailureCode =
   | 'tenant_forbidden'
   | 'actor_forbidden'
   | 'actor_not_registered'
+  | 'agent_revoked'
   | 'register_forbidden'
   | 'approve_forbidden'
   | 'approver_mismatch'

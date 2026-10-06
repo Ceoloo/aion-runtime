@@ -10,6 +10,7 @@
  *   allowed; subsequent calls cannot escalate grants via the body.
  */
 import type { Actor, AgentActor } from '@aion/core';
+import { registryAllowsExecution } from '@aion/core';
 import type { ControlPlane } from '../control-plane.js';
 import type { AuthMode, Principal } from './types.js';
 import type { AuthDenied } from './authenticate.js';
@@ -70,6 +71,15 @@ export async function resolveDurableActor(
 
   const existing = await cp.dataLayer.actors.get(claimed.actorId);
   if (existing) {
+    const existingAgent = asAgent(existing);
+    if (existingAgent && !registryAllowsExecution(existingAgent)) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'agent_revoked',
+        message: `agent ${existingAgent.actorId} revocation_state=${existingAgent.revocationState ?? 'active'} — registry denies execution`,
+      };
+    }
     // Durable grants win — body cannot escalate permissions/tenant/risk.
     return { ok: true, actor: existing, registered: false };
   }
