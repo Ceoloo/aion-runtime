@@ -26,8 +26,9 @@ const DATA_REPO = process.env.AION_DATA_REPO ?? 'https://github.com/Ceoloo/aion-
 // (Replaces the orphaned core 72294ec + side-branch data 60ff3d2 + the
 // revenue_sessions overlay; aion-data's runner reconciles DBs migrated on that
 // old lineage — see aion-data/migrations/README.md.)
-const CORE_REF = process.env.AION_CORE_REF ?? '52ecf40b860ec9e32fe62c3fc8a8252c5ad17157';
-const DATA_REF = process.env.AION_DATA_REF ?? '5da145ae74ea5fa1a6e8deccc129d2f9574f4bc4';
+// AIO-44 Agent Identity Registry (aion-core PR #32, aion-data PR #25).
+const CORE_REF = process.env.AION_CORE_REF ?? '85a1fb3b5aabf86f97d6c74f37db9f7a7ffe5008';
+const DATA_REF = process.env.AION_DATA_REF ?? '9cd36e8cfbe9a30731bd7e29d8818548fd336cc8';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const vendor = resolve(root, 'vendor');

@@ -12,7 +12,9 @@
  *                                         (capability or serviceKey)
  *   POST /v1/missions/run                 — Mission 004 multi-step orchestration
  *   GET  /v1/missions                     — Mission 006 tenant mission list
- *   GET  /v1/actors                       — tenant's registered agents for operator launch
+ *   GET  /v1/actors                       — tenant agent inventory (+ registry completeness)
+ *   POST /v1/actors                       — register / upsert agent (AIO-44 registry)
+ *   POST /v1/actors/:actorId/revoke       — suspend/revoke/contain agent identity
  *   GET  /v1/missions/:missionId          — Mission 006 mission detail (tenant-gated)
  *   PATCH /v1/missions/:missionId         — close / update mission status + metadata
  *                                         (OL-001 terminal outcomes / visible waivers)
@@ -124,6 +126,12 @@ import {
   type RiskLevel,
   type Run,
   type MissionOrchestrationResult,
+  AgentRevocationState,
+  buildAgentRegistryInventory,
+  inspectAgentRegistryCompleteness,
+  isAgentExecutionAllowed,
+  toAgentRegistryRecord,
+  withAgentRevocationState,
 } from '@aion/core';
 import { isDataError, toOutcomeReference } from '@aion/data';
 import type { ControlPlane } from './control-plane.js';
@@ -133,6 +141,7 @@ import type { AuthDenied } from './auth/authenticate.js';
 import {
   authenticateRequest,
   assertPrincipalTenantAccess,
+  principalHasRole,
 } from './auth/authenticate.js';
 import {
   resolveDurableActor,
@@ -297,6 +306,18 @@ export async function handleGatewayRequest(
 
     if (method === 'GET' && path === '/v1/actors') {
       return await listTenantAgents(cp, req);
+    }
+    if (method === 'POST' && path === '/v1/actors') {
+      return await registerTenantAgent(await readJsonBody(req), cp, req);
+    }
+    const actorRevokeMatch = /^\/v1\/actors\/([^/]+)\/revoke$/.exec(path);
+    if (method === 'POST' && actorRevokeMatch) {
+      return await revokeTenantAgent(
+        decodeURIComponent(actorRevokeMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+      );
     }
 
     if (method === 'GET' && path === '/v1/economics') {
@@ -1546,7 +1567,162 @@ async function listTenantAgents(
   const actors = await cp.dataLayer.actors.list();
   const agents = actors.filter((actor): actor is AgentActor =>
     actor.actorType === 'agent' && actor.tenantId === tenantId);
-  return { status: 200, body: { agents, count: agents.length } };
+  const inventory = buildAgentRegistryInventory(agents);
+  return {
+    status: 200,
+    body: {
+      agents,
+      count: agents.length,
+      registry: {
+        completeCount: inventory.completeCount,
+        incompleteCount: inventory.incompleteCount,
+        orphanCount: inventory.orphanCount,
+        entries: inventory.entries.map((entry) => ({
+          actorId: entry.actor.actorId,
+          agentId: entry.actor.agentId,
+          complete: entry.complete,
+          missing: entry.missing,
+          revocationState: entry.actor.revocationState ?? 'active',
+          record: entry.record,
+        })),
+      },
+    },
+  };
+}
+
+/**
+ * AIO-44 — register or upsert an agent into the durable identity registry.
+ * Requires principal `register` role in auth mode=required.
+ * Body may set `requireComplete: true` to fail closed on SIS-AG-02 gaps.
+ */
+async function registerTenantAgent(
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const principal = principalContext.getStore() ?? null;
+  if (cp.auth.mode === 'required') {
+    if (!principal) {
+      return jsonError(401, 'auth_required', 'authenticated principal is required');
+    }
+    if (!principalHasRole(principal, 'register')) {
+      return jsonError(
+        403,
+        'register_forbidden',
+        `principal ${principal.principalId} lacks register role`,
+      );
+    }
+  }
+  if (!body || typeof body !== 'object') {
+    return jsonError(400, 'invalid_body', 'actor body must be a JSON object');
+  }
+  const payload = body as Record<string, unknown>;
+  const requireComplete = payload.requireComplete === true;
+  const actorRaw = payload.actor ?? payload;
+  const parsed = Actor.safeParse(actorRaw);
+  if (!parsed.success) {
+    return jsonError(400, 'invalid_actor', 'actor must satisfy the Core Actor contract');
+  }
+  if (parsed.data.actorType !== 'agent') {
+    return jsonError(400, 'invalid_actor', 'POST /v1/actors accepts agent actors only');
+  }
+  const agent = parsed.data;
+  const tenantId = agent.tenantId ?? callerTenantId(req);
+  if (!tenantId) {
+    return jsonError(403, 'tenant_required', 'agent.tenantId or x-aion-tenant-id is required');
+  }
+  const denied = assertPrincipalTenantAccess(principal, tenantId, { requireTenant: true });
+  if (denied) return authDeniedResponse(denied);
+  if (agent.tenantId && agent.tenantId !== tenantId) {
+    return jsonError(403, 'tenant_forbidden', 'actor.tenantId must match request tenant');
+  }
+  const completeAgent: AgentActor = {
+    ...agent,
+    tenantId,
+    revocationState: agent.revocationState ?? 'active',
+  };
+  const inspection = inspectAgentRegistryCompleteness(completeAgent);
+  if (requireComplete && !inspection.ok) {
+    return jsonError(400, 'registry_incomplete', inspection.detail);
+  }
+  await cp.dataLayer.actors.save(completeAgent);
+  return {
+    status: 201,
+    body: {
+      agent: completeAgent,
+      registry: {
+        complete: inspection.ok,
+        missing: inspection.missing,
+        record: inspection.ok ? toAgentRegistryRecord(completeAgent) : null,
+      },
+    },
+  };
+}
+
+/**
+ * AIO-44 — suspend / revoke / contain an agent identity.
+ * Body: `{ "state": "suspended" | "revoked", "reason"?: string }`
+ */
+async function revokeTenantAgent(
+  actorIdRaw: string,
+  body: unknown,
+  cp: ControlPlane,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  const principal = principalContext.getStore() ?? null;
+  if (cp.auth.mode === 'required') {
+    if (!principal) {
+      return jsonError(401, 'auth_required', 'authenticated principal is required');
+    }
+    if (
+      !principalHasRole(principal, 'register') &&
+      !principalHasRole(principal, 'approve')
+    ) {
+      return jsonError(
+        403,
+        'register_forbidden',
+        `principal ${principal.principalId} lacks register/approve role to revoke agents`,
+      );
+    }
+  }
+  const tenantId = callerTenantId(req);
+  const denied = assertPrincipalTenantAccess(principal, tenantId, { requireTenant: true });
+  if (denied) return authDeniedResponse(denied);
+  const existing = await cp.dataLayer.actors.get(actorIdRaw as Actor['actorId']);
+  if (!existing || existing.actorType !== 'agent') {
+    return jsonError(404, 'actor_not_found', `agent ${actorIdRaw} not found`);
+  }
+  if (existing.tenantId !== tenantId) {
+    return jsonError(403, 'tenant_forbidden', `agent ${actorIdRaw} is outside caller tenant`);
+  }
+  const stateRaw =
+    body && typeof body === 'object'
+      ? (body as Record<string, unknown>).state
+      : undefined;
+  const stateParsed = AgentRevocationState.safeParse(stateRaw ?? 'revoked');
+  if (!stateParsed.success || stateParsed.data === 'active') {
+    return jsonError(
+      400,
+      'invalid_revocation_state',
+      'state must be suspended or revoked',
+    );
+  }
+  const now = new Date().toISOString();
+  const updated = withAgentRevocationState(existing, stateParsed.data, now);
+  if (body && typeof body === 'object' && typeof (body as Record<string, unknown>).reason === 'string') {
+    updated.metadata = {
+      ...updated.metadata,
+      revocationReason: (body as Record<string, unknown>).reason,
+    };
+  }
+  await cp.dataLayer.actors.save(updated);
+  return {
+    status: 200,
+    body: {
+      agent: updated,
+      executionAllowed: isAgentExecutionAllowed(updated),
+    },
+  };
 }
 
 /**
