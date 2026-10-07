@@ -18,6 +18,7 @@ import {
   systemClock,
   MockExecutionAdapter,
   capability,
+  SharedRoom,
 } from '@aion/core';
 import type {
   ExecutionAdapter,
@@ -137,6 +138,8 @@ export interface ControlPlane {
   orchestrator: Orchestrator;
   /** Mission 004 sequential multi-step runner over durable missions/workflows. */
   missionOrchestrator: MissionOrchestrator;
+  /** Process-local room where humans and agents share one timeline. */
+  rooms: SharedRoom;
   /** Shared policy engine — Runtime authorization boundary (Mission 003). */
   policyEngine: PolicyEngine;
   /**
@@ -243,6 +246,7 @@ export function buildControlPlane(
     dataLayer,
     orchestrator,
     missionOrchestrator,
+    rooms: new SharedRoom(clock),
     policyEngine,
     routingOverrides: new Map(),
     auth: config.auth,
