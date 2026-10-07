@@ -21,6 +21,9 @@
  *   POST /v1/registry/agents/:id/reactivate — AIO-44 set revocation_state=active
  *   GET  /v1/registry/review              — AIO-44 SIS-AG-10 governance review
  *   GET  /v1/registry/inventory           — AIO-44 SIS-AG-02 inventory export
+ *   GET  /v1/assurance/catalog            — AIO-47 Continuous Assurance check catalog
+ *   POST /v1/assurance/run                — AIO-47 run prototype connectors (CA-AG/RV/RT)
+ *   GET  /v1/assurance/evidence           — AIO-47 list recent AssuranceEvidence
  *   GET  /v1/missions/:missionId          — Mission 006 mission detail (tenant-gated)
  *   PATCH /v1/missions/:missionId         — close / update mission status + metadata
  *                                         (OL-001 terminal outcomes / visible waivers)
@@ -162,6 +165,11 @@ import {
   suspendRegistryAgent,
   upsertRegistryAgent,
 } from './registry.js';
+import {
+  getAssuranceCatalog,
+  listAssuranceEvidence,
+  runAssurance,
+} from './assurance.js';
 
 /** Per-request principal bound at the gateway identity boundary. */
 const principalContext = new AsyncLocalStorage<Principal | null>();
@@ -329,6 +337,17 @@ export async function handleGatewayRequest(
     if (method === 'GET' && path === '/v1/registry/inventory') {
       return await exportRegistryInventory(cp, req, principal);
     }
+
+    if (method === 'GET' && path === '/v1/assurance/catalog') {
+      return await getAssuranceCatalog();
+    }
+    if (method === 'POST' && path === '/v1/assurance/run') {
+      return await runAssurance(await readJsonBody(req), cp, req, principal);
+    }
+    if (method === 'GET' && path === '/v1/assurance/evidence') {
+      return await listAssuranceEvidence(cp, req, principal, url);
+    }
+
     const registryAgentMatch = /^\/v1\/registry\/agents\/([^/]+)$/.exec(path);
     if (method === 'GET' && registryAgentMatch) {
       return await getRegistryAgent(
