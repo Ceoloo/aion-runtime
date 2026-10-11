@@ -23,7 +23,15 @@
  *   GET  /v1/registry/inventory           — AIO-44 SIS-AG-02 inventory export
  *   GET  /v1/assurance/catalog            — AIO-47 Continuous Assurance check catalog
  *   POST /v1/assurance/run                — AIO-47 run prototype connectors (CA-AG/RV/RT)
- *   GET  /v1/assurance/evidence           — AIO-47 list recent AssuranceEvidence
+   *   GET  /v1/assurance/evidence           — AIO-47 list recent AssuranceEvidence
+ *   POST /v1/rooms                        — open a shared human/agent room
+ *   POST /v1/rooms/:roomId/join           — join an open room in this tenant
+ *   POST /v1/rooms/:roomId/members        — admit a member
+ *   POST /v1/rooms/:roomId/enter          — mark the actor present
+ *   POST /v1/rooms/:roomId/leave          — mark the actor absent
+ *   POST /v1/rooms/:roomId/posts          — say, handoff, or decision
+ *   GET  /v1/rooms/:roomId                — room, members, presence, timeline
+ *   GET  /v1/rooms/:roomId/attention      — mentions and addressed handoffs
  *   GET  /v1/missions/:missionId          — Mission 006 mission detail (tenant-gated)
  *   PATCH /v1/missions/:missionId         — close / update mission status + metadata
  *                                         (OL-001 terminal outcomes / visible waivers)
@@ -170,6 +178,16 @@ import {
   listAssuranceEvidence,
   runAssurance,
 } from './assurance.js';
+import {
+  admitRoomMember,
+  enterRoom,
+  joinRoom,
+  leaveRoom,
+  openRoom,
+  postToRoom,
+  readRoom,
+  roomAttention,
+} from './rooms.js';
 
 /** Per-request principal bound at the gateway identity boundary. */
 const principalContext = new AsyncLocalStorage<Principal | null>();
@@ -346,6 +364,74 @@ export async function handleGatewayRequest(
     }
     if (method === 'GET' && path === '/v1/assurance/evidence') {
       return await listAssuranceEvidence(cp, req, principal, url);
+    }
+
+    if (method === 'POST' && path === '/v1/rooms') {
+      return await openRoom(await readJsonBody(req), cp, req, principal);
+    }
+    const roomAttentionMatch = /^\/v1\/rooms\/([^/]+)\/attention$/.exec(path);
+    if (method === 'GET' && roomAttentionMatch) {
+      return await roomAttention(
+        decodeURIComponent(roomAttentionMatch[1]!),
+        cp,
+        req,
+        principal,
+        url,
+      );
+    }
+    const roomJoinMatch = /^\/v1\/rooms\/([^/]+)\/join$/.exec(path);
+    if (method === 'POST' && roomJoinMatch) {
+      return await joinRoom(
+        decodeURIComponent(roomJoinMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+        principal,
+      );
+    }
+    const roomMembersMatch = /^\/v1\/rooms\/([^/]+)\/members$/.exec(path);
+    if (method === 'POST' && roomMembersMatch) {
+      return await admitRoomMember(
+        decodeURIComponent(roomMembersMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+        principal,
+      );
+    }
+    const roomEnterMatch = /^\/v1\/rooms\/([^/]+)\/enter$/.exec(path);
+    if (method === 'POST' && roomEnterMatch) {
+      return await enterRoom(
+        decodeURIComponent(roomEnterMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+        principal,
+      );
+    }
+    const roomLeaveMatch = /^\/v1\/rooms\/([^/]+)\/leave$/.exec(path);
+    if (method === 'POST' && roomLeaveMatch) {
+      return await leaveRoom(
+        decodeURIComponent(roomLeaveMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+        principal,
+      );
+    }
+    const roomPostsMatch = /^\/v1\/rooms\/([^/]+)\/posts$/.exec(path);
+    if (method === 'POST' && roomPostsMatch) {
+      return await postToRoom(
+        decodeURIComponent(roomPostsMatch[1]!),
+        await readJsonBody(req),
+        cp,
+        req,
+        principal,
+      );
+    }
+    const roomMatch = /^\/v1\/rooms\/([^/]+)$/.exec(path);
+    if (method === 'GET' && roomMatch) {
+      return await readRoom(decodeURIComponent(roomMatch[1]!), cp, req, principal, url);
     }
 
     const registryAgentMatch = /^\/v1\/registry\/agents\/([^/]+)$/.exec(path);
