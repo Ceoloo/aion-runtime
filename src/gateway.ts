@@ -10,6 +10,7 @@
  * Routes:
  *   POST /v1/commands                     — submit governed work
  *                                         (capability or serviceKey)
+ *   POST /v1/proof/fake-ghl/seed-appointment — proof-only human-book sim (fake+AION_PROOF)
  *   POST /v1/missions/run                 — Mission 004 multi-step orchestration
  *   GET  /v1/missions                     — Mission 006 tenant mission list
  *   GET  /v1/actors                       — tenant's registered agents for operator launch
@@ -173,6 +174,7 @@ import {
   suspendRegistryAgent,
   upsertRegistryAgent,
 } from './registry.js';
+import { sharedFakeGhlBackend } from './adapters/ghl/fake-ghl-backend.js';
 import {
   getAssuranceCatalog,
   listAssuranceEvidence,
@@ -329,6 +331,10 @@ export async function handleGatewayRequest(
 
     if (method === 'POST' && path === '/v1/commands') {
       return await submitCommand(await readJsonBody(req), cp, logger, principal, req);
+    }
+
+    if (method === 'POST' && path === '/v1/proof/fake-ghl/seed-appointment') {
+      return await seedFakeGhlAppointment(await readJsonBody(req), logger, req);
     }
 
     if (method === 'POST' && path === '/v1/missions/run') {
@@ -1594,6 +1600,48 @@ async function decideApproval(
           : {}),
     },
   };
+}
+
+/**
+ * Proof-only: simulate a human booking into FakeGhlBackend so AT-5 can verify
+ * via crm.appointment.read without enabling crm.appointment.create.
+ * Refused unless AION_PROOF=1 and GHL_BACKEND=fake.
+ */
+async function seedFakeGhlAppointment(
+  body: unknown,
+  logger: Logger,
+  req: IncomingMessage,
+): Promise<GatewayResponse> {
+  if (process.env.AION_PROOF !== '1' || process.env.GHL_BACKEND !== 'fake') {
+    return jsonError(
+      403,
+      'proof_only',
+      'POST /v1/proof/fake-ghl/seed-appointment requires AION_PROOF=1 and GHL_BACKEND=fake',
+    );
+  }
+  const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+  const tenantId =
+    (typeof input['tenantId'] === 'string' && input['tenantId']) ||
+    callerTenantId(req);
+  const contactId = typeof input['contactId'] === 'string' ? input['contactId'] : '';
+  if (!tenantId || !contactId) {
+    return jsonError(400, 'invalid_input', 'tenantId and contactId are required');
+  }
+  const appointment = sharedFakeGhlBackend.seedAppointment(tenantId, {
+    contactId,
+    title: typeof input['title'] === 'string' ? input['title'] : undefined,
+    startAt: typeof input['startAt'] === 'string' ? input['startAt'] : undefined,
+    endAt: typeof input['endAt'] === 'string' ? input['endAt'] : undefined,
+    calendarId: typeof input['calendarId'] === 'string' ? input['calendarId'] : undefined,
+    id: typeof input['id'] === 'string' ? input['id'] : undefined,
+  });
+  logger.info('proof_fake_ghl_seed_appointment', {
+    operation: 'POST /v1/proof/fake-ghl/seed-appointment',
+    tenant_id: tenantId,
+    contact_id: contactId,
+    appointment_id: appointment.id,
+  });
+  return { status: 200, body: { appointment, humanOperated: true } };
 }
 
 function callerTenantId(req: IncomingMessage): string | undefined {

@@ -32,6 +32,8 @@
     "proof:aio17-ghl-lead-workflow": "bash scripts/aio17-ghl-lead-workflow-proof.sh",
     "proof:revenue-workflow": "bash scripts/revenue-workflow-durable-proof.sh",
     "proof:ghl-acceptance-fixtures": "bash scripts/ghl-acceptance-fixtures.sh",
+    "proof:rcaos-at": "bash scripts/rcaos-at-proof.sh",
+    "test:rcaos-rules": "npm run build && node --test dist/rcaos/demo-electrical-smb-v1.test.js",
     "proof:ghl-live-capability": "node scripts/lib/proof-guard.mjs --mode live-capability && node scripts/lib/proof-credential-scope.mjs && node dist/ghl-live-capability-proof.js",
     "proof:ie002": "bash scripts/ie002-proof-matrix.sh",
     "test:outcomes-sessions": "npm run build && node --test dist/outcomes-sessions-gateway.test.js",
