@@ -62,6 +62,45 @@ export class FakeGhlBackend implements GhlBackend {
     return this.workspace(tenantId).opportunities.size;
   }
 
+  contactCount(tenantId: string): number {
+    return this.workspace(tenantId).contacts.size;
+  }
+
+  appointmentCount(tenantId: string): number {
+    return this.workspace(tenantId).appointments.size;
+  }
+
+  /**
+   * Simulate a human booking an appointment outside the API path
+   * (`crm.appointment.create` stays CAPABILITY_DISABLED / inactive).
+   * Used by RCAOS D5 → D6 verify via `crm.appointment.read`.
+   */
+  seedAppointment(
+    tenantId: string,
+    input: {
+      contactId: string;
+      title?: string;
+      startAt?: string;
+      endAt?: string;
+      calendarId?: string;
+      id?: string;
+    },
+  ): CrmAppointment {
+    const ws = this.workspace(tenantId);
+    const id = input.id ?? `ghl_appt_${randomUUID().slice(0, 8)}`;
+    const appt = normalizeAppointment({
+      id,
+      contactId: input.contactId,
+      title: input.title ?? 'Booked appointment (human)',
+      startAt: input.startAt ?? '2026-10-20T15:00:00.000Z',
+      endAt: input.endAt ?? '2026-10-20T15:30:00.000Z',
+      status: 'booked',
+      calendarId: input.calendarId ?? 'cal_default',
+    });
+    ws.appointments.set(id, appt);
+    return { ...appt };
+  }
+
   injectFailure(failure: GhlBackendFailure): void {
     this.nextFailure = failure;
   }
@@ -166,10 +205,18 @@ export class FakeGhlBackend implements GhlBackend {
       }
       case 'contact.search': {
         const query = (str(payload['query']) ?? '').toLowerCase();
+        const email = str(payload['email'])?.toLowerCase();
+        const phone = str(payload['phone']);
         const items = [...ws.contacts.values()].filter((c) => {
-          if (!query) return true;
+          if (email && c.email?.toLowerCase() === email) return true;
+          if (phone && c.phone && normalizePhone(c.phone) === normalizePhone(phone)) {
+            return true;
+          }
+          if (!query && !email && !phone) return true;
+          if (!query) return false;
           return (
             c.email?.toLowerCase().includes(query) ||
+            c.phone?.includes(query) ||
             c.firstName?.toLowerCase().includes(query) ||
             c.lastName?.toLowerCase().includes(query) ||
             c.id.toLowerCase().includes(query)
@@ -448,6 +495,10 @@ function seedWorkspace(ws: Workspace, tenantId: string): void {
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function normalizePhone(value: string): string {
+  return value.replace(/\D/g, '');
 }
 
 /** Process-wide fake used by defaultAdapters / proofs (swap for live later). */

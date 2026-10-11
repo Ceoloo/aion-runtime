@@ -105,6 +105,25 @@ export class RuntimeClient {
     return this.request('POST', '/v1/commands', { body: input });
   }
 
+  /**
+   * Proof-only: seed a human-booked appointment into FakeGhlBackend
+   * (requires Runtime AION_PROOF=1 + GHL_BACKEND=fake).
+   */
+  async seedFakeGhlAppointment(body: {
+    tenantId: string;
+    contactId: string;
+    title?: string;
+    startAt?: string;
+    endAt?: string;
+    calendarId?: string;
+    id?: string;
+  }): Promise<unknown> {
+    return this.request('POST', '/v1/proof/fake-ghl/seed-appointment', {
+      body,
+      tenantId: body.tenantId,
+    });
+  }
+
   /** Mission 004 — run or resume a multi-step mission orchestration. */
   async runMission(input: RunMissionRequest): Promise<unknown> {
     return this.request('POST', '/v1/missions/run', { body: input });

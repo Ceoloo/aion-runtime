@@ -7,3 +7,5 @@ vendor/
 
 .proof-d-anchors.env*
 .proof-runtime-*.log
+.proof-rcaos-at-evidence.json
+.proof-rcaos-at-runtime.log
