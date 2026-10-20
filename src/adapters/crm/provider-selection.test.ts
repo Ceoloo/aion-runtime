@@ -6,7 +6,7 @@ import { resolveCrmProvider } from './provider-policy.js';
 
 const BASE = {
   AION_ENVIRONMENT: 'local',
-  DATABASE_URL: 'postgresql://aion_app:x@localhost:5432/aion_data',
+  DATABASE_URL: 'postgresql://aion_app:x@db.example.invalid:5432/aion_data',
   AION_AUTH_MODE: 'open',
 };
 
