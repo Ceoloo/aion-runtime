@@ -30,7 +30,8 @@ import { createDataLayer, type DataLayer } from '@aion/data';
 import { currentTenantId } from './tenant-context.js';
 import type { RuntimeConfig } from './config.js';
 import type { GatewayAuthConfig } from './auth/types.js';
-import { GhlAdapter, MISSION_009_CAPABILITIES, createGhlBackendFromEnv } from './adapters/ghl/index.js';
+import { GhlAdapter, MISSION_009_CAPABILITIES } from './adapters/ghl/index.js';
+import { createCrmBackendFromEnv } from './adapters/crm/index.js';
 
 /** The low-risk capability used by the boot self-check (aion-infra §45). */
 export const SMOKE_CAPABILITY: Capability = capability('infra.smoke');
@@ -192,10 +193,11 @@ export function buildControlPlane(
     adapters ??
     [
       ...baseMockAdapters(),
-      // GHL adapter first among CRM handlers — governed external plane (M009).
+      // CRM adapter (GhlAdapter) — governed external plane (M009). Backend is
+      // selected by CRM_PROVIDER (default ghl → production GHL unchanged).
       new GhlAdapter({
         sideEffects: dataLayer.externalSideEffects,
-        backend: createGhlBackendFromEnv(),
+        backend: createCrmBackendFromEnv(),
       }),
     ];
 
