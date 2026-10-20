@@ -103,35 +103,121 @@ test('opportunity.create maps contactId to pointOfContactId', async () => {
   }
 });
 
-test('note.create and task.create hit /rest/notes and /rest/tasks', async () => {
-  const paths: string[] = [];
+test('create responses without id fail closed (no synthetic substitute)', async () => {
   const backend = new LiveTwentyBackend({
     env: ENV,
-    fetchImpl: mockFetch((url, _method, _body) => {
-      paths.push(new URL(url).pathname);
-      if (url.includes('/notes')) {
-        return { data: { createNote: { id: 'note_1', title: 'n' } } };
+    fetchImpl: mockFetch(() => ({ data: { createPerson: { name: { firstName: 'NoId' } } } })),
+  });
+
+  const result = await backend.execute({
+    tenantId: 't1',
+    action: 'contact.update',
+    payload: { firstName: 'NoId' },
+    idempotencyKey: 'ik_noid',
+  });
+
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.errorCode, 'TWENTY_MISSING_ID');
+});
+
+test('note.create uses body (v0.40) and links NoteTarget when contactId present', async () => {
+  const calls: { path: string; body: Record<string, unknown> }[] = [];
+  const backend = new LiveTwentyBackend({
+    env: ENV,
+    fetchImpl: mockFetch((url, _method, body) => {
+      const path = new URL(url).pathname;
+      const parsed = JSON.parse(body ?? '{}') as Record<string, unknown>;
+      calls.push({ path, body: parsed });
+      if (path === '/rest/notes') {
+        assert.equal(parsed['body'], 'hello');
+        assert.equal(parsed['bodyV2'], undefined);
+        return { data: { createNote: { id: 'note_1', title: 'AION note' } } };
       }
-      return { data: { createTask: { id: 'task_1', title: 't' } } };
+      if (path === '/rest/noteTargets') {
+        assert.equal(parsed['noteId'], 'note_1');
+        assert.equal(parsed['personId'], 'person_1');
+        return { data: { createNoteTarget: { id: 'nt_1', noteId: 'note_1', personId: 'person_1' } } };
+      }
+      throw new Error(`unexpected path ${path}`);
     }),
   });
 
   const note = await backend.execute({
     tenantId: 't1',
     action: 'note.create',
-    payload: { body: 'hello' },
+    payload: { body: 'hello', contactId: 'person_1' },
     idempotencyKey: 'ik_n',
-  });
-  const task = await backend.execute({
-    tenantId: 't1',
-    action: 'task.create',
-    payload: { title: 'follow up' },
-    idempotencyKey: 'ik_t',
   });
 
   assert.equal(note.ok, true);
+  if (note.ok) {
+    assert.equal(note.externalResourceId, 'note_1');
+    assert.equal(note.body['noteTargetId'], 'nt_1');
+  }
+  assert.deepEqual(
+    calls.map((c) => c.path),
+    ['/rest/notes', '/rest/noteTargets'],
+  );
+});
+
+test('task.create links TaskTarget when opportunityId present', async () => {
+  const paths: string[] = [];
+  const backend = new LiveTwentyBackend({
+    env: ENV,
+    fetchImpl: mockFetch((url, _method, body) => {
+      const path = new URL(url).pathname;
+      paths.push(path);
+      if (path === '/rest/tasks') {
+        return { data: { createTask: { id: 'task_1', title: 'follow up' } } };
+      }
+      if (path === '/rest/taskTargets') {
+        const parsed = JSON.parse(body ?? '{}') as {
+          taskId?: string;
+          opportunityId?: string;
+        };
+        assert.equal(parsed.taskId, 'task_1');
+        assert.equal(parsed.opportunityId, 'opp_1');
+        return {
+          data: {
+            createTaskTarget: { id: 'tt_1', taskId: 'task_1', opportunityId: 'opp_1' },
+          },
+        };
+      }
+      throw new Error(`unexpected path ${path}`);
+    }),
+  });
+
+  const task = await backend.execute({
+    tenantId: 't1',
+    action: 'task.create',
+    payload: { title: 'follow up', opportunityId: 'opp_1' },
+    idempotencyKey: 'ik_t',
+  });
+
   assert.equal(task.ok, true);
-  assert.deepEqual(paths, ['/rest/notes', '/rest/tasks']);
+  if (task.ok) assert.equal(task.body['taskTargetId'], 'tt_1');
+  assert.deepEqual(paths, ['/rest/tasks', '/rest/taskTargets']);
+});
+
+test('note.create without relation ids skips NoteTarget', async () => {
+  const paths: string[] = [];
+  const backend = new LiveTwentyBackend({
+    env: ENV,
+    fetchImpl: mockFetch((url) => {
+      paths.push(new URL(url).pathname);
+      return { data: { createNote: { id: 'note_2', title: 'n' } } };
+    }),
+  });
+
+  const note = await backend.execute({
+    tenantId: 't1',
+    action: 'note.create',
+    payload: { body: 'orphan ok' },
+    idempotencyKey: 'ik_n2',
+  });
+
+  assert.equal(note.ok, true);
+  assert.deepEqual(paths, ['/rest/notes']);
 });
 
 test('deferred messaging actions fail closed without HTTP', async () => {

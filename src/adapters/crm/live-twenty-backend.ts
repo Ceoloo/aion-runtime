@@ -144,8 +144,10 @@ export class LiveTwentyBackend implements CrmBackend {
         if (!data.ok) return data;
         const person = extractRecord(data.body, ['createPerson', 'person', 'people']);
         const normalized = personToContact(person);
+        const resourceId = requireExternalId(normalized.id, 'person');
+        if (typeof resourceId !== 'string') return resourceId;
         return ok(
-          normalized.id || `twenty_person_${randomUUID().slice(0, 8)}`,
+          resourceId,
           data.externalRequestId,
           normalized as unknown as Record<string, unknown>,
         );
@@ -191,8 +193,10 @@ export class LiveTwentyBackend implements CrmBackend {
         if (!data.ok) return data;
         const opp = extractRecord(data.body, ['createOpportunity', 'opportunity', 'opportunities']);
         const normalized = opportunityFromTwenty(opp);
+        const resourceId = requireExternalId(normalized.id, 'opportunity');
+        if (typeof resourceId !== 'string') return resourceId;
         return ok(
-          normalized.id || `twenty_opp_${randomUUID().slice(0, 8)}`,
+          resourceId,
           data.externalRequestId,
           normalized as unknown as Record<string, unknown>,
         );
@@ -242,16 +246,28 @@ export class LiveTwentyBackend implements CrmBackend {
         return ok(pipeline.id, `twenty_req_${randomUUID()}`, pipeline as unknown as Record<string, unknown>);
       }
       case 'note.create': {
+        // Twenty v0.40 Note uses RICH_TEXT field `body` (not bodyV2).
         const title = str(payload['title']) ?? 'AION note';
         const bodyText = str(payload['body']) ?? str(payload['note']) ?? '';
         const data = await this.api(connection, 'POST', '/rest/notes', {
           title,
-          bodyV2: { markdown: bodyText },
+          body: bodyText,
         });
         if (!data.ok) return data;
         const note = extractRecord(data.body, ['createNote', 'note', 'notes']);
-        const id = str(note['id']) ?? `twenty_note_${randomUUID().slice(0, 8)}`;
-        return ok(id, data.externalRequestId, { id, title, body: bodyText, ...note });
+        const resourceId = requireExternalId(str(note['id']), 'note');
+        if (typeof resourceId !== 'string') return resourceId;
+        const target = await this.linkNoteTarget(connection, resourceId, payload);
+        if (typeof target !== 'object' || target === null || !('linked' in target)) {
+          return target;
+        }
+        return ok(resourceId, data.externalRequestId, {
+          id: resourceId,
+          title,
+          body: bodyText,
+          ...note,
+          ...(target.targetId ? { noteTargetId: target.targetId } : {}),
+        });
       }
       case 'task.create': {
         const title = str(payload['title']) ?? str(payload['body']) ?? 'AION task';
@@ -261,8 +277,18 @@ export class LiveTwentyBackend implements CrmBackend {
         });
         if (!data.ok) return data;
         const task = extractRecord(data.body, ['createTask', 'task', 'tasks']);
-        const id = str(task['id']) ?? `twenty_task_${randomUUID().slice(0, 8)}`;
-        return ok(id, data.externalRequestId, { id, title, ...task });
+        const resourceId = requireExternalId(str(task['id']), 'task');
+        if (typeof resourceId !== 'string') return resourceId;
+        const target = await this.linkTaskTarget(connection, resourceId, payload);
+        if (typeof target !== 'object' || target === null || !('linked' in target)) {
+          return target;
+        }
+        return ok(resourceId, data.externalRequestId, {
+          id: resourceId,
+          title,
+          ...task,
+          ...(target.targetId ? { taskTargetId: target.targetId } : {}),
+        });
       }
       case 'conversation.read':
       case 'conversation.send':
@@ -278,6 +304,49 @@ export class LiveTwentyBackend implements CrmBackend {
       default:
         return fail('TWENTY_UNSUPPORTED_ACTION', `unsupported action: ${action}`, false);
     }
+  }
+
+  /**
+   * Twenty v0.40 links notes via NoteTarget (personId / companyId / opportunityId),
+   * not inline fields on Note. Skip when no relation id is provided.
+   */
+  private async linkNoteTarget(
+    connection: TwentyConnection,
+    noteId: string,
+    payload: Record<string, unknown>,
+  ): Promise<{ linked: true; targetId?: string } | CrmBackendResult> {
+    const relation = relationIdsFromPayload(payload);
+    if (!relation) return { linked: true };
+    const data = await this.api(connection, 'POST', '/rest/noteTargets', {
+      noteId,
+      ...relation,
+    });
+    if (!data.ok) return data;
+    const target = extractRecord(data.body, ['createNoteTarget', 'noteTarget', 'noteTargets']);
+    const targetId = requireExternalId(str(target['id']), 'noteTarget');
+    if (typeof targetId !== 'string') return targetId;
+    return { linked: true, targetId };
+  }
+
+  /**
+   * Twenty v0.40 links tasks via TaskTarget (personId / companyId / opportunityId).
+   */
+  private async linkTaskTarget(
+    connection: TwentyConnection,
+    taskId: string,
+    payload: Record<string, unknown>,
+  ): Promise<{ linked: true; targetId?: string } | CrmBackendResult> {
+    const relation = relationIdsFromPayload(payload);
+    if (!relation) return { linked: true };
+    const data = await this.api(connection, 'POST', '/rest/taskTargets', {
+      taskId,
+      ...relation,
+    });
+    if (!data.ok) return data;
+    const target = extractRecord(data.body, ['createTaskTarget', 'taskTarget', 'taskTargets']);
+    const targetId = requireExternalId(str(target['id']), 'taskTarget');
+    if (typeof targetId !== 'string') return targetId;
+    return { linked: true, targetId };
   }
 
   private async api(
@@ -415,6 +484,33 @@ function ok(
 
 function fail(errorCode: string, errorMessage: string, retryable = false): CrmBackendResult {
   return { ok: false, errorCode, errorMessage, retryable };
+}
+
+/** Never invent Twenty IDs — create responses must return a real resource id. */
+function requireExternalId(id: string | undefined, kind: string): string | CrmBackendResult {
+  if (id) return id;
+  return fail(
+    'TWENTY_MISSING_ID',
+    `Twenty ${kind} response omitted id; refusing synthetic substitute`,
+    true,
+  );
+}
+
+/**
+ * Map AION payload relation keys onto Twenty NoteTarget / TaskTarget join columns.
+ * Prefers explicit personId / companyId / opportunityId; contactId → personId.
+ */
+function relationIdsFromPayload(
+  payload: Record<string, unknown>,
+): Record<string, string> | null {
+  const personId = str(payload['personId']) ?? str(payload['contactId']);
+  const companyId = str(payload['companyId']);
+  const opportunityId = str(payload['opportunityId']);
+  const relation: Record<string, string> = {};
+  if (personId) relation['personId'] = personId;
+  if (companyId) relation['companyId'] = companyId;
+  if (opportunityId) relation['opportunityId'] = opportunityId;
+  return Object.keys(relation).length > 0 ? relation : null;
 }
 
 function str(value: unknown): string | undefined {
