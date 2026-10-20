@@ -20,8 +20,19 @@ Runtime selects the CRM system-of-engagement backend at boot.
    (`TWENTY_LIVE_NOT_IMPLEMENTED`) until the HTTP mapping slice lands; use
    `TWENTY_BACKEND=fake` for proofs.
 
+## Cutover sequence
+
+1. Non-prod Twenty compose (`--profile twenty`)
+2. `npm run proof:rcaos-at-twenty` (fake)
+3. Live HTTP adapter against disposable workspace (`TWENTY_BACKEND=live`)
+4. Cutover gate (workflow + isolation + governance + rollback) — then production `CRM_PROVIDER=twenty`
+
+See aion-docs `roadmap/crm-001-cutover-sequence.md`.
+
 ## Code
 
 - Port: `src/adapters/crm/types.ts` (`CrmBackend`)
 - Factory: `src/adapters/crm/create-backend.ts`
-- GHL leaf: `src/adapters/ghl/` (unchanged HTTP client)
+- Live Twenty: `src/adapters/crm/live-twenty-backend.ts` (`/rest/people|opportunities|notes|tasks`)
+- Fake Twenty proof: `npm run proof:rcaos-at-twenty`
+- GHL leaf: `src/adapters/ghl/` (unchanged HTTP client; production default)

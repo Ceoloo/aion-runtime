@@ -33,6 +33,7 @@
     "proof:revenue-workflow": "bash scripts/revenue-workflow-durable-proof.sh",
     "proof:ghl-acceptance-fixtures": "bash scripts/ghl-acceptance-fixtures.sh",
     "proof:rcaos-at": "bash scripts/rcaos-at-proof.sh",
+    "proof:rcaos-at-twenty": "bash scripts/rcaos-at-twenty-proof.sh",
     "test:rcaos-rules": "npm run build && node --test dist/rcaos/demo-electrical-smb-v1.test.js",
     "proof:ghl-live-capability": "node scripts/lib/proof-guard.mjs --mode live-capability && node scripts/lib/proof-credential-scope.mjs && node dist/ghl-live-capability-proof.js",
     "proof:ie002": "bash scripts/ie002-proof-matrix.sh",
@@ -46,7 +47,7 @@
     "test:gateway": "npm run build && node --test dist/auth/decision-identity.test.js dist/outcomes-sessions-gateway.test.js dist/commands-submit-concurrency.test.js dist/auth/identity-plane.test.js dist/trust-score.test.js dist/operator-loop-linkage.test.js dist/mission-run-identity.test.js dist/registry-gateway.test.js dist/rooms-gateway.test.js",
     "test:registry": "npm run build && node --test dist/registry-gateway.test.js",
     "test:rooms": "npm run build && node --test dist/rooms-gateway.test.js",
-    "test:proof-safety": "npm run build && node --test dist/adapters/ghl/backend-selection.test.js dist/adapters/ghl/production-write-eligibility.test.js dist/adapters/crm/provider-selection.test.js scripts/lib/proof-guard.test.mjs scripts/lib/proof-credential-scope.test.mjs"
+    "test:proof-safety": "npm run build && node --test dist/adapters/ghl/backend-selection.test.js dist/adapters/ghl/production-write-eligibility.test.js dist/adapters/crm/provider-selection.test.js dist/adapters/crm/live-twenty-backend.test.js scripts/lib/proof-guard.test.mjs scripts/lib/proof-credential-scope.test.mjs"
   },
   "dependencies": {
     "@aion/core": "file:vendor/aion-core",
