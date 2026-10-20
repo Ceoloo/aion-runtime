@@ -50,7 +50,12 @@ async function main(): Promise<void> {
   });
 
   // CRM backend is always reported: fake must never be silent, and inferred-live is flagged for explicit config.
-  const crm = { operation: 'startup', crm_backend: config.crmBackend.kind, crm_backend_source: config.crmBackend.source };
+  const crm = {
+    operation: 'startup',
+    crm_provider: config.crmProvider,
+    crm_backend: config.crmBackend.kind,
+    crm_backend_source: config.crmBackend.source,
+  };
   if (config.crmBackend.productionFakeAcknowledged) {
     logger.error('crm_backend_fake_in_production', { ...crm, detail: config.crmBackend.warning });
   } else if (config.crmBackend.warning) {

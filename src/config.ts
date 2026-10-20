@@ -10,7 +10,12 @@
 
 import type { GatewayAuthConfig } from './auth/types.js';
 import { loadGatewayAuthConfig, AuthConfigError } from './auth/config.js';
-import { resolveGhlBackendChoice, GhlBackendSelectionError, type CrmBackendChoice } from './adapters/ghl/backend-policy.js';
+import type { CrmBackendChoice } from './adapters/ghl/backend-policy.js';
+import {
+  resolveCrmBackendSelection,
+  CrmBackendSelectionError,
+  type CrmProvider,
+} from './adapters/crm/index.js';
 
 export type Environment = 'local' | 'staging' | 'production';
 
@@ -41,6 +46,8 @@ export interface RuntimeConfig {
    * durable-actor anti-escalation still enforced.
    */
   auth: GatewayAuthConfig;
+  /** CRM SoE provider — unset/ghl keeps production GHL (ADR-019 / CRM-001). */
+  crmProvider: CrmProvider;
   /** Resolved CRM backend (fake vs live) and how it was chosen — validated at startup, reported by /health/ready. */
   crmBackend: CrmBackendChoice;
 }
@@ -120,11 +127,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     throw err;
   }
 
+  let crmProvider: CrmProvider;
   let crmBackend: CrmBackendChoice;
   try {
-    crmBackend = resolveGhlBackendChoice(env);
+    const selected = resolveCrmBackendSelection(env);
+    crmProvider = selected.provider;
+    crmBackend = selected.choice;
   } catch (err) {
-    if (err instanceof GhlBackendSelectionError) {
+    if (err instanceof CrmBackendSelectionError) {
       throw new ConfigError(err.message);
     }
     throw err;
@@ -139,6 +149,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     runSmokeOnBoot: env.RUN_SMOKE_ON_BOOT === 'true',
     corsOrigins,
     auth,
+    crmProvider,
     crmBackend,
     release: {
       serviceVersion: env.SERVICE_VERSION ?? 'unknown',

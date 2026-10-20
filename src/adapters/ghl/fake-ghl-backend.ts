@@ -35,16 +35,21 @@ interface Workspace {
 }
 
 /**
- * In-process multi-tenant GHL stand-in for CI / proof matrices.
+ * In-process multi-tenant CRM stand-in for CI / proof matrices.
  *
  * Seeds Phase A read fixtures per tenant on first access. Live mode swaps in
- * LiveGhlBackend without changing the adapter contract.
+ * a live backend (GHL or Twenty) without changing the adapter contract.
+ * Default name `ghl-fake`; CRM_PROVIDER=twenty uses `twenty-fake`.
  */
 export class FakeGhlBackend implements GhlBackend {
-  readonly name = 'ghl-fake';
+  readonly name: string;
   private readonly workspaces = new Map<string, Workspace>();
   private nextFailure: GhlBackendFailure | undefined;
   private readonly idempotencyCache = new Map<string, GhlBackendResult>();
+
+  constructor(name = 'ghl-fake') {
+    this.name = name;
+  }
 
   mutationCount(tenantId: string): number {
     return this.workspace(tenantId).mutationCount;
