@@ -1,10 +1,7 @@
 # OL-001 incident: synthetic evidence crossed the production write boundary
 
 **Status:** open. The runtime ledger is permanent incident evidence.
-**CRM cleanup:** not performed. This record documents the authorizing path.
-Delete the live note only after that path is reviewed, using the cleanup
-section below. Do not treat this file as the deletion. Removing the note
-from the client CRM does not retire OL-001.
+**CRM cleanup:** an operator reported manual deletion, but the required identifiers and deletion timestamp have not been recorded or independently verified. This record documents the authorizing path. Do not treat the report alone as verified cleanup. Removing the note from the client CRM does not retire OL-001.
 
 ## What crossed the boundary
 
@@ -153,7 +150,7 @@ Fake-backend writes stay eligible. They never reach GHL.
 and writes its note there. Reads of the configured client contact
 remain read-only.
 
-## CRM cleanup (not done)
+## CRM cleanup (operator report recorded; evidence incomplete)
 
 This environment has no GHL credential and must not guess the note id.
 After review of this path, an operator with location access should:
@@ -169,5 +166,21 @@ After review of this path, an operator with location access should:
    does not close the incident record and does not authorize another
    OL-001 acceptance run.
 
-Until that append exists, the live note is still on the client record
-on purpose.
+The operator report below supersedes the earlier “not done” status, but the deletion remains unverified until the required provider note ID, UTC deletion time, operator identity, and contact ID SHA-256 are appended.
+
+
+## Cleanup update — operator report (2026-10-20; incomplete)
+
+**Recorded at:** 2026-10-20T07:48:23Z (recording time; not the deletion time).
+**Source statement:** “Note deleted manually.”
+**Provider note ID:** not supplied.
+**Deletion time (UTC):** not supplied.
+**Operator identity:** not supplied.
+**Contact ID SHA-256:** not supplied; raw contact ID is intentionally omitted.
+**Independent CRM verification:** not performed in this review.
+
+This records the operator’s report without claiming that the exact note was
+verified as deleted. The required metadata must be added before this cleanup
+can be marked complete. No OL-001 mission, execution, approval, or
+`external_side_effects` row was modified in this review. The pre-existing
+Annfiera payment remains untouched and excluded from GE-001 attributed cash.
