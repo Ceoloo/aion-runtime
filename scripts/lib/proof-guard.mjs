@@ -132,7 +132,15 @@ if (urls.length) {
     console.error('[proof-guard] note: AION_PROOF_DB_DISPOSABLE=1 ignored — honored only inside GitHub Actions');
   }
   for (const url of urls) {
-    const client = new pg.Client({ connectionString: url, ssl: val('DATABASE_SSL') === 'false' ? false : { rejectUnauthorized: false } });
+    const useSsl = val('DATABASE_SSL') !== 'false';
+    const rejectUnauthorized = val('DATABASE_SSL_REJECT_UNAUTHORIZED') !== 'false';
+    const ca = val('DATABASE_SSL_CA') || undefined;
+    const client = new pg.Client({
+      connectionString: url,
+      ssl: useSsl
+        ? { rejectUnauthorized, ...(ca ? { ca } : {}) }
+        : false,
+    });
     try {
       await client.connect();
       const has = async (t) => (await client.query('SELECT to_regclass($1) AS r', [`public.${t}`])).rows[0].r !== null;

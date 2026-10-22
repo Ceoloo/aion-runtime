@@ -33,6 +33,14 @@ export interface RuntimeConfig {
   };
   /** Require TLS to the database (true off-local). */
   databaseSsl: boolean;
+  /**
+   * When TLS is on, verify the server certificate against trusted CAs
+   * (Node defaults + optional DATABASE_SSL_CA). Never silently disable
+   * verification in staging/production.
+   */
+  databaseSslRejectUnauthorized: boolean;
+  /** Optional PEM CA bundle for private / provider database CAs. */
+  databaseSslCa?: string;
   /** Run the controlled Core lifecycle self-check on boot. */
   runSmokeOnBoot: boolean;
   /**
@@ -112,6 +120,30 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     ? env.DATABASE_SSL === 'true'
     : environment !== 'local';
 
+  // Certificate verification is mandatory when TLS is on, except an explicit
+  // local-only escape hatch (DATABASE_SSL_REJECT_UNAUTHORIZED=false).
+  let databaseSslRejectUnauthorized = true;
+  if (env.DATABASE_SSL_REJECT_UNAUTHORIZED === 'false') {
+    if (environment !== 'local') {
+      throw new ConfigError(
+        'DATABASE_SSL_REJECT_UNAUTHORIZED=false is not allowed outside local',
+      );
+    }
+    databaseSslRejectUnauthorized = false;
+  } else if (
+    env.DATABASE_SSL_REJECT_UNAUTHORIZED !== undefined &&
+    env.DATABASE_SSL_REJECT_UNAUTHORIZED !== '' &&
+    env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'true'
+  ) {
+    throw new ConfigError(
+      `invalid DATABASE_SSL_REJECT_UNAUTHORIZED '${env.DATABASE_SSL_REJECT_UNAUTHORIZED}' (expected true|false)`,
+    );
+  }
+
+  const databaseSslCa = env.DATABASE_SSL_CA?.trim()
+    ? env.DATABASE_SSL_CA
+    : undefined;
+
   const corsOrigins = (env.AION_CORS_ORIGINS ?? '')
     .split(',')
     .map((s) => s.trim())
@@ -146,6 +178,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     port,
     logLevel,
     databaseSsl,
+    databaseSslRejectUnauthorized,
+    ...(databaseSslCa ? { databaseSslCa } : {}),
     runSmokeOnBoot: env.RUN_SMOKE_ON_BOOT === 'true',
     corsOrigins,
     auth,
@@ -156,5 +190,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
       gitSha: env.GIT_SHA ?? 'unknown',
       buildTime: env.BUILD_TIME ?? 'unknown',
     },
+  };
+}
+
+/** Build node-postgres `ssl` option from runtime config. */
+export function databaseSslOption(
+  config: Pick<
+    RuntimeConfig,
+    'databaseSsl' | 'databaseSslRejectUnauthorized' | 'databaseSslCa'
+  >,
+): boolean | { rejectUnauthorized: boolean; ca?: string } | undefined {
+  if (!config.databaseSsl) return undefined;
+  return {
+    rejectUnauthorized: config.databaseSslRejectUnauthorized,
+    ...(config.databaseSslCa ? { ca: config.databaseSslCa } : {}),
   };
 }

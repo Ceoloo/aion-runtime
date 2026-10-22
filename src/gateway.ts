@@ -291,10 +291,38 @@ function authDeniedResponse(denied: AuthDenied): GatewayResponse {
   return jsonError(denied.status, denied.code, denied.message);
 }
 
+/** Default max JSON body for gateway mutations (1 MiB). */
+const MAX_GATEWAY_BODY_BYTES = Number(
+  process.env.AION_GATEWAY_MAX_BODY_BYTES ?? 1_048_576,
+);
+
+class GatewayBodyTooLargeError extends Error {
+  readonly maxBytes: number;
+  constructor(maxBytes: number) {
+    super(`request body exceeds ${maxBytes} bytes`);
+    this.name = 'GatewayBodyTooLargeError';
+    this.maxBytes = maxBytes;
+  }
+}
+
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
+  let total = 0;
+  let oversized = false;
   for await (const chunk of req) {
-    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    if (oversized) continue;
+    const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+    total += buf.length;
+    if (total > MAX_GATEWAY_BODY_BYTES) {
+      // Stop buffering but finish reading so the handler can return 413.
+      oversized = true;
+      chunks.length = 0;
+      continue;
+    }
+    chunks.push(buf);
+  }
+  if (oversized) {
+    throw new GatewayBodyTooLargeError(MAX_GATEWAY_BODY_BYTES);
   }
   if (chunks.length === 0) return {};
   const raw = Buffer.concat(chunks).toString('utf8');
@@ -740,6 +768,9 @@ export async function handleGatewayRequest(
       return await getExecutionByRun(exeByRunMatch[1]!, cp, req);
     }
   } catch (err) {
+    if (err instanceof GatewayBodyTooLargeError) {
+      return jsonError(413, 'payload_too_large', err.message);
+    }
     if (err instanceof SyntaxError) {
       return jsonError(400, 'invalid_json', 'request body must be valid JSON');
     }

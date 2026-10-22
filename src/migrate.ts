@@ -38,15 +38,40 @@ function log(level: string, message: string, fields: Record<string, unknown> = {
   sink.write(`${JSON.stringify({ timestamp: new Date().toISOString(), level, service: 'aion-migrate', message, ...fields })}\n`);
 }
 
+function resolveMigrationSsl():
+  | undefined
+  | { rejectUnauthorized: boolean; ca?: string } {
+  const useSsl = (process.env.DATABASE_SSL ?? 'true') === 'true';
+  if (!useSsl) return undefined;
+  const environment = process.env.AION_ENVIRONMENT ?? 'local';
+  let rejectUnauthorized = true;
+  if (process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === 'false') {
+    if (environment !== 'local') {
+      log(
+        'error',
+        'config_invalid',
+        {
+          reason:
+            'DATABASE_SSL_REJECT_UNAUTHORIZED=false is not allowed outside local',
+        },
+      );
+      process.exit(1);
+    }
+    rejectUnauthorized = false;
+  }
+  const ca = process.env.DATABASE_SSL_CA?.trim() || undefined;
+  return { rejectUnauthorized, ...(ca ? { ca } : {}) };
+}
+
 async function main(): Promise<void> {
   const migrationUrl = requireEnv('MIGRATION_DATABASE_URL');
-  const useSsl = (process.env.DATABASE_SSL ?? 'true') === 'true';
+  const ssl = resolveMigrationSsl();
 
   // ── 1. Apply aion-data's canonical migrations (authoritative) ────────────
   const dl = createDataLayer({
     connectionString: migrationUrl,
     applicationName: 'aion-migrate',
-    ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+    ssl,
   });
 
   try {
@@ -100,7 +125,7 @@ async function main(): Promise<void> {
   const pool = new Pool({
     connectionString: migrationUrl,
     application_name: 'aion-migrate-grants',
-    ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+    ssl,
   });
   try {
     log('info', 'applying_grants');

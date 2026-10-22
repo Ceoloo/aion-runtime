@@ -6,7 +6,7 @@
 # The runtime step NEVER receives MIGRATION_DATABASE_URL.
 #
 # Required env: MIGRATION_DATABASE_URL, DATABASE_URL.
-# Optional: PORT (8090), GIT_SHA (local), AION_ENVIRONMENT (staging), AION_AUTH_MODE (open), DATABASE_SSL.
+# Optional: PORT (8090), GIT_SHA (local), AION_ENVIRONMENT (local), AION_AUTH_MODE (open), DATABASE_SSL.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/proof-env.sh" fake
@@ -16,8 +16,8 @@ ROOT="$(pwd)"
 PORT="${PORT:-8090}"
 export GIT_SHA="${GIT_SHA:-local}" SERVICE_VERSION="${SERVICE_VERSION:-0.1.0}"
 export BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-export AION_ENVIRONMENT="${AION_ENVIRONMENT:-staging}" DATABASE_SSL="${DATABASE_SSL:-false}"
-# Identity plane: harnesses default open auth (staging/production would otherwise
+export AION_ENVIRONMENT="${AION_ENVIRONMENT:-local}" DATABASE_SSL="${DATABASE_SSL:-false}"
+# Identity plane: local+open by default (staging/production reject open; override with required + AION_GATEWAY_API_KEYS).
 # require AION_GATEWAY_API_KEYS). Override with AION_AUTH_MODE=required + keys.
 export AION_AUTH_MODE="${AION_AUTH_MODE:-open}"
 

@@ -74,21 +74,44 @@ test('proof context with explicit fake works and never touches the live backend'
 });
 
 // ── startup: loadConfig fails fast with the clean config_invalid path ─────────────────────────────────────────
-const BASE = { DATABASE_URL: 'postgresql://u:p@db.example.invalid:5432/d', AION_AUTH_MODE: 'open', DATABASE_SSL: 'false' };
+const GATEWAY_KEYS = JSON.stringify([
+  {
+    token: 'test-gateway-token-xx',
+    principalId: 'principal_test',
+    kind: 'operator',
+    actorId: 'actor_test',
+    tenantIds: ['aion-systems'],
+    roles: ['invoke', 'approve', 'register'],
+  },
+]);
+const BASE = {
+  DATABASE_URL: 'postgresql://u:p@db.example.invalid:5432/d',
+  DATABASE_SSL: 'false',
+};
+const PROD_AUTH = {
+  AION_AUTH_MODE: 'required',
+  AION_GATEWAY_API_KEYS: GATEWAY_KEYS,
+};
 test('loadConfig: production + credentials starts and reports crmBackend=live', () => {
-  const c = loadConfig(env(BASE, PROD, CREDS));
+  const c = loadConfig(env(BASE, PROD, PROD_AUTH, CREDS));
   assert.deepEqual([c.crmBackend.kind, c.crmBackend.source], ['live', 'inferred_credentials']);
 });
 test('loadConfig: production without credentials or selection refuses to start with a ConfigError', () => {
-  assert.throws(() => loadConfig(env(BASE, PROD)), (e: unknown) => e instanceof ConfigError && /fake backend/.test((e as Error).message));
+  assert.throws(() => loadConfig(env(BASE, PROD, PROD_AUTH)), (e: unknown) => e instanceof ConfigError && /fake backend/.test((e as Error).message));
 });
 test('loadConfig: production + unacknowledged fake refuses to start', () => {
-  assert.throws(() => loadConfig(env(BASE, PROD, { GHL_BACKEND: 'fake' })), ConfigError);
+  assert.throws(() => loadConfig(env(BASE, PROD, PROD_AUTH, { GHL_BACKEND: 'fake' })), ConfigError);
 });
 test('loadConfig: acknowledged fake in production is reported (never silent)', () => {
-  const c = loadConfig(env(BASE, PROD, { GHL_BACKEND: 'fake', AION_ACK_FAKE_CRM: '1' }));
+  const c = loadConfig(env(BASE, PROD, PROD_AUTH, { GHL_BACKEND: 'fake', AION_ACK_FAKE_CRM: '1' }));
   assert.equal(c.crmBackend.productionFakeAcknowledged, true);
 });
+test('loadConfig: production rejects AION_AUTH_MODE=open', () => {
+  assert.throws(
+    () => loadConfig(env(BASE, PROD, { AION_AUTH_MODE: 'open' }, CREDS)),
+    (e: unknown) => e instanceof ConfigError && /AION_AUTH_MODE=open is not allowed in production/.test((e as Error).message),
+  );
+});
 test('loadConfig: local development with nothing set still starts on the fake backend', () => {
-  assert.equal(loadConfig(env(BASE)).crmBackend.kind, 'fake');
+  assert.equal(loadConfig(env(BASE, { AION_AUTH_MODE: 'open' })).crmBackend.kind, 'fake');
 });

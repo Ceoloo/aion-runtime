@@ -77,9 +77,19 @@ test('assertPrincipalTenantAccess allows header within principal tenants', () =>
   assert.equal(denied, null);
 });
 
-test('resolveAuthMode defaults to required off-local', () => {
+test('resolveAuthMode defaults to required off-local and rejects open there', () => {
   assert.equal(resolveAuthMode('local', undefined), 'open');
   assert.equal(resolveAuthMode('staging', undefined), 'required');
   assert.equal(resolveAuthMode('production', undefined), 'required');
-  assert.equal(resolveAuthMode('production', 'open'), 'open');
+  assert.equal(resolveAuthMode('local', 'open'), 'open');
+  assert.throws(
+    () => resolveAuthMode('production', 'open'),
+    (err: unknown) =>
+      err instanceof Error && /AION_AUTH_MODE=open is not allowed in production/.test(err.message),
+  );
+  assert.throws(
+    () => resolveAuthMode('staging', 'open'),
+    (err: unknown) =>
+      err instanceof Error && /AION_AUTH_MODE=open is not allowed in staging/.test(err.message),
+  );
 });
