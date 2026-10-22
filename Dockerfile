@@ -8,7 +8,7 @@
 # pipeline (aion-infra §21–22).
 
 # ---- build stage -----------------------------------------------------------
-FROM node:20-bookworm-slim AS build
+FROM node:22-bookworm-slim AS build
 WORKDIR /build
 
 # git is needed to vendor the pinned @aion/core and @aion/data commits.
@@ -94,7 +94,7 @@ RUN set -eux; \
     node --input-type=module -e "await import('@aion/core'); await import('@aion/data'); console.log('vendored @aion/* production-safe and resolve')"
 
 # ---- runtime stage ---------------------------------------------------------
-FROM node:20-bookworm-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 

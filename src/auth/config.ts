@@ -113,7 +113,16 @@ export function resolveAuthMode(
   environment: 'local' | 'staging' | 'production',
   raw: string | undefined,
 ): AuthMode {
-  if (raw === 'open' || raw === 'required') return raw;
+  if (raw === 'open') {
+    // Open auth is a local/proof escape hatch only — never staging/production.
+    if (environment !== 'local') {
+      throw new AuthConfigError(
+        `AION_AUTH_MODE=open is not allowed in ${environment} (local only)`,
+      );
+    }
+    return 'open';
+  }
+  if (raw === 'required') return 'required';
   if (raw !== undefined && raw.trim() !== '') {
     throw new AuthConfigError(
       `invalid AION_AUTH_MODE '${raw}' (expected open|required)`,

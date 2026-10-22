@@ -80,7 +80,8 @@ docker run -d --name "$RT" --network "$NET" \
   -e DATABASE_URL="$APP_URL" \
   -e AION_ENVIRONMENT=production -e DATABASE_SSL=false \
   -e GHL_BACKEND=fake -e AION_ACK_FAKE_CRM=1 \
-  -e AION_AUTH_MODE=open \
+  -e AION_AUTH_MODE=required \
+  -e AION_GATEWAY_API_KEYS='[{"token":"boot-check-token-xx","principalId":"principal_boot","kind":"operator","actorId":"actor_boot","tenantIds":["aion-systems"],"roles":["invoke","approve","register"]}]' \
   -e PORT=8080 -e GIT_SHA="${EXPECTED_SHA:-unknown}" \
   "$IMAGE" >/dev/null
 

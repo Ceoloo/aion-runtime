@@ -167,7 +167,13 @@ export function buildControlPlane(
   const dataLayer = createDataLayer({
     connectionString: config.databaseUrl,
     applicationName: `aion-runtime-${config.environment}`,
-    ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
+    ssl: (() => {
+      if (!config.databaseSsl) return undefined;
+      return {
+        rejectUnauthorized: config.databaseSslRejectUnauthorized,
+        ...(config.databaseSslCa ? { ca: config.databaseSslCa } : {}),
+      };
+    })(),
     maxConnections: 5,
     connectionTimeoutMs: 5000,
     statementTimeoutMs: 15000,
