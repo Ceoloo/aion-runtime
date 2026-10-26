@@ -184,3 +184,21 @@ verified as deleted. The required metadata must be added before this cleanup
 can be marked complete. No OL-001 mission, execution, approval, or
 `external_side_effects` row was modified in this review. The pre-existing
 Annfiera payment remains untouched and excluded from GE-001 attributed cash.
+
+## Cleanup closed as superseded (2026-10-26)
+
+AION is retiring GHL as its CRM in favour of self-hosted Twenty (aion-docs
+ADR-019). The cleanup task (Linear AIO-36) is closed as superseded:
+
+- The operator-reported manual deletion above stands as the last known state.
+  The provider note id, deletion time, operator identity and contact hash were
+  not recorded and will not be collected. **The deletion remains unverified.**
+- GE-001 no longer waits on this cleanup; it is re-scoped to run on Twenty
+  after CRM-001 cutover Gate D.
+- Nothing else changes: the OL-001 mission, executions, approvals and
+  `external_side_effects` rows stay permanent incident evidence, the
+  `SYNTHETIC_TO_PRODUCTION_DENIED` boundary stays a regression case, and the
+  pre-existing Annfiera payment stays outside GE-001 attributed outcome.
+
+The incident **status stays open** until the boundary is also proven on the
+Twenty write path (`LiveTwentyBackend`) before production cutover.
