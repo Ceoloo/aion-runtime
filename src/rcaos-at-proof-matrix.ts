@@ -51,7 +51,7 @@ const EVIDENCE_PATH =
   process.env.RCAOS_EVIDENCE_PATH ?? '.proof-rcaos-at-evidence.json';
 /** Fake backend the Runtime under test must report (rcaos-at-twenty-proof.sh exports CRM_PROVIDER=twenty). */
 const EXPECTED_BACKEND =
-  process.env.CRM_PROVIDER === 'twenty' ? 'twenty-fake' : 'ghl-fake';
+  process.env.CRM_PROVIDER?.trim().toLowerCase() === 'twenty' ? 'twenty-fake' : 'ghl-fake';
 
 const RCAOS_PERMS = [
   capability('crm.contact.read'),
