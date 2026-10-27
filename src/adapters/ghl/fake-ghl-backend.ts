@@ -508,3 +508,9 @@ function normalizePhone(value: string): string {
 
 /** Process-wide fake used by defaultAdapters / proofs (swap for live later). */
 export const sharedFakeGhlBackend = new FakeGhlBackend();
+
+/**
+ * Process-wide fake Twenty stand-in (CRM_PROVIDER=twenty, TWENTY_BACKEND=fake).
+ * Shared so proof-only seeding and governed reads see the same workspace.
+ */
+export const sharedFakeTwentyBackend = new FakeGhlBackend('twenty-fake');

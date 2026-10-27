@@ -107,6 +107,30 @@ describe('live CRM write eligibility', () => {
     assert.equal(decision.code, SYNTHETIC_TO_PRODUCTION_DENIED);
   });
 
+  it('refuses the incident note on the live Twenty backend', () => {
+    const decision = assessLiveCustomerWrite({
+      backendName: 'twenty-live',
+      action: 'note.create',
+      payload: {
+        contactId: 'annfiera-contact',
+        body: INCIDENT_NOTE,
+      },
+    });
+    assert.equal(decision.eligible, false);
+    assert.equal(decision.disposition, 'deny');
+    assert.equal(decision.code, SYNTHETIC_TO_PRODUCTION_DENIED);
+  });
+
+  it('allows the same note on the fake Twenty backend', () => {
+    const decision = assessLiveCustomerWrite({
+      backendName: 'twenty-fake',
+      action: 'note.create',
+      payload: { contactId: 'annfiera-contact', body: INCIDENT_NOTE },
+    });
+    assert.equal(decision.eligible, true);
+    assert.equal(decision.disposition, 'defer-to-policy');
+  });
+
   it('allows the same note on the fake backend', () => {
     const decision = assessLiveCustomerWrite({
       backendName: 'ghl-fake',
@@ -242,6 +266,22 @@ describe('GhlAdapter live write boundary', () => {
         },
         { synthetic: true },
       ),
+    );
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error?.code, SYNTHETIC_TO_PRODUCTION_DENIED);
+    assert.equal(backend.calls.length, 0);
+    assert.equal(sideEffects.saved.length, 0);
+  });
+
+  it('synthetic body on a live Twenty contact → DENY before the external request', async () => {
+    const backend = new RecordingBackend('twenty-live');
+    const { adapter, sideEffects } = liveAdapter(backend);
+    const result = await adapter.execute(
+      request('crm.note.create', {
+        contactId: 'twenty-client-contact',
+        body: INCIDENT_NOTE,
+        idempotencyKey: 'syn-body-twenty',
+      }),
     );
     assert.equal(result.status, 'failed');
     assert.equal(result.error?.code, SYNTHETIC_TO_PRODUCTION_DENIED);

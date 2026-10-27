@@ -9,7 +9,7 @@ import {
   TwentyBackendSelectionError,
 } from './twenty-backend-policy.js';
 import { LiveTwentyBackend } from './live-twenty-backend.js';
-import { FakeGhlBackend } from '../ghl/fake-ghl-backend.js';
+import { sharedFakeTwentyBackend } from '../ghl/fake-ghl-backend.js';
 import {
   createGhlBackendFromEnv,
   GhlBackendSelectionError,
@@ -59,7 +59,7 @@ export function resolveCrmBackendSelection(
     const backend: CrmBackend =
       choice.kind === 'live'
         ? new LiveTwentyBackend(env)
-        : new FakeGhlBackend('twenty-fake');
+        : sharedFakeTwentyBackend;
     return { provider: 'twenty', choice, backend };
   } catch (err) {
     if (err instanceof TwentyBackendSelectionError) {

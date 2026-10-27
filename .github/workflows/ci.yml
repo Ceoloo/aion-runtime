@@ -182,6 +182,15 @@ jobs:
           PORT: '8105'
         run: npm run proof:rcaos-at
 
+      - name: RCAOS AT-1…AT-7 on fake Twenty (CRM-001 Gate B)
+        env:
+          MIGRATION_DATABASE_URL: postgresql://aion_migrator:ci_migrator@localhost:5432/aion_data
+          DATABASE_URL: postgresql://aion_app:ci_app@localhost:5432/aion_data
+          DATABASE_SSL: 'false'
+          GIT_SHA: ${{ github.sha }}
+          PORT: '8106'
+        run: npm run proof:rcaos-at-twenty
+
       - name: IE-002 acceptance matrix (provisioning + activation gate)
         env:
           MIGRATION_DATABASE_URL: postgresql://aion_migrator:ci_migrator@localhost:5432/aion_data
