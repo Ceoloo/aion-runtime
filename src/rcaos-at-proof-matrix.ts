@@ -49,6 +49,9 @@ const TENANT = 'aion-systems';
 const COHORT = 'demo_rcaos_v1';
 const EVIDENCE_PATH =
   process.env.RCAOS_EVIDENCE_PATH ?? '.proof-rcaos-at-evidence.json';
+/** Fake backend the Runtime under test must report (rcaos-at-twenty-proof.sh exports CRM_PROVIDER=twenty). */
+const EXPECTED_BACKEND =
+  process.env.CRM_PROVIDER?.trim().toLowerCase() === 'twenty' ? 'twenty-fake' : 'ghl-fake';
 
 const RCAOS_PERMS = [
   capability('crm.contact.read'),
@@ -243,8 +246,8 @@ async function captureInquiry(
   if (!succeeded(contactFinal)) {
     fail('D1', `contact update failed: ${JSON.stringify(contactFinal).slice(0, 500)}`);
   }
-  if (backendOf(contactFinal) !== 'ghl-fake') {
-    fail('D1', `expected backend=ghl-fake, got ${backendOf(contactFinal)}`);
+  if (backendOf(contactFinal) !== EXPECTED_BACKEND) {
+    fail('D1', `expected backend=${EXPECTED_BACKEND}, got ${backendOf(contactFinal)}`);
   }
   const contactId = externalId(contactFinal) || existingId || '';
   if (!contactId) fail('D1', 'missing contactId');

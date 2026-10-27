@@ -25,6 +25,12 @@ export const PROTECTED_LIVE_GHL_RECORD_SHA256: readonly string[] = [
 export const SYNTHETIC_TO_PRODUCTION_DENIED = 'SYNTHETIC_TO_PRODUCTION_DENIED';
 
 /**
+ * Backends that write to a real CRM. Every live provider gets this boundary:
+ * the OL-001 note is just as wrong on a Twenty record as on a GHL one.
+ */
+const LIVE_CRM_BACKENDS: ReadonlySet<string> = new Set(['ghl-live', 'twenty-live']);
+
+/**
  * Writes that become customer intelligence on a contact: notes, tasks,
  * messages, and contact field updates. Pipeline stage changes are not in
  * this set; they are still refused when their payload text is synthetic
@@ -96,7 +102,7 @@ export interface LiveWriteEligibility {
 export function assessLiveCustomerWrite(
   input: LiveWriteEligibilityInput,
 ): LiveWriteEligibility {
-  if (input.backendName !== 'ghl-live') {
+  if (!LIVE_CRM_BACKENDS.has(input.backendName)) {
     return defer();
   }
   if (isRead(input.action)) {

@@ -174,7 +174,10 @@ import {
   suspendRegistryAgent,
   upsertRegistryAgent,
 } from './registry.js';
-import { sharedFakeGhlBackend } from './adapters/ghl/fake-ghl-backend.js';
+import {
+  sharedFakeGhlBackend,
+  sharedFakeTwentyBackend,
+} from './adapters/ghl/fake-ghl-backend.js';
 import {
   getAssuranceCatalog,
   listAssuranceEvidence,
@@ -1634,22 +1637,31 @@ async function decideApproval(
 }
 
 /**
- * Proof-only: simulate a human booking into FakeGhlBackend so AT-5 can verify
- * via crm.appointment.read without enabling crm.appointment.create.
- * Refused unless AION_PROOF=1 and GHL_BACKEND=fake.
+ * Proof-only: simulate a human booking into the selected fake CRM backend so
+ * AT-5 can verify via crm.appointment.read without enabling
+ * crm.appointment.create. Refused unless AION_PROOF=1 and GHL_BACKEND=fake;
+ * with CRM_PROVIDER=twenty it also requires TWENTY_BACKEND=fake and seeds the
+ * shared fake Twenty workspace.
  */
 async function seedFakeGhlAppointment(
   body: unknown,
   logger: Logger,
   req: IncomingMessage,
 ): Promise<GatewayResponse> {
-  if (process.env.AION_PROOF !== '1' || process.env.GHL_BACKEND !== 'fake') {
+  const twenty = process.env.CRM_PROVIDER?.trim().toLowerCase() === 'twenty';
+  if (
+    process.env.AION_PROOF !== '1' ||
+    process.env.GHL_BACKEND !== 'fake' ||
+    (twenty && process.env.TWENTY_BACKEND?.trim().toLowerCase() !== 'fake')
+  ) {
     return jsonError(
       403,
       'proof_only',
-      'POST /v1/proof/fake-ghl/seed-appointment requires AION_PROOF=1 and GHL_BACKEND=fake',
+      'POST /v1/proof/fake-ghl/seed-appointment requires AION_PROOF=1 and GHL_BACKEND=fake ' +
+        '(and TWENTY_BACKEND=fake when CRM_PROVIDER=twenty)',
     );
   }
+  const fakeBackend = twenty ? sharedFakeTwentyBackend : sharedFakeGhlBackend;
   const input = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
   const tenantId =
     (typeof input['tenantId'] === 'string' && input['tenantId']) ||
@@ -1658,7 +1670,7 @@ async function seedFakeGhlAppointment(
   if (!tenantId || !contactId) {
     return jsonError(400, 'invalid_input', 'tenantId and contactId are required');
   }
-  const appointment = sharedFakeGhlBackend.seedAppointment(tenantId, {
+  const appointment = fakeBackend.seedAppointment(tenantId, {
     contactId,
     title: typeof input['title'] === 'string' ? input['title'] : undefined,
     startAt: typeof input['startAt'] === 'string' ? input['startAt'] : undefined,
