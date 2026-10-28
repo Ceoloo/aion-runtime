@@ -100,3 +100,19 @@ image.
 
 Seeded by extracting the Phase 3 reference host from `aion-infra/runtime/`
 unchanged. See ADR-002 for the decision and migration path.
+
+## Untrusted model security
+
+Runtime enforces the [AION security pillar](https://github.com/Ceoloo/aion-docs/blob/main/architecture/untrusted-model-security.md).
+With `AION_AUTH_MODE=open` (local only), HTTP listens on **127.0.0.1** and rejects
+non-local Host authorities and unapproved browser origins before routing.
+CLI proofs use `http://127.0.0.1:$PORT`. Browser development clients must use an
+exact `AION_CORS_ORIGINS` entry (no wildcard or opaque `null` origin).
+
+Container peers, LAN clients and reverse proxies must use `AION_AUTH_MODE=required`
+with configured bearer keys; this mode listens on `0.0.0.0` behind the deployment's
+private network/TLS edge. Never proxy an open-mode gateway to remote callers.
+Loopback is not protection against malicious processes already on the same host.
+
+`npm run test:network-boundary` checks the negative HTTP paths in CI alongside
+existing gateway identity, tenant and approval tests.
