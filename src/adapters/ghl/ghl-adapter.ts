@@ -23,7 +23,7 @@ import { isGhlReadAction } from './types.js';
 import { sharedFakeGhlBackend } from './fake-ghl-backend.js';
 import {
   assessLiveCustomerWrite,
-  isProtectedLiveGhlRecord,
+  isProtectedLiveCrmRecord,
   rememberLiveFixtureRecord,
   SYNTHETIC_TO_PRODUCTION_DENIED,
 } from './production-write-eligibility.js';
@@ -383,7 +383,8 @@ export class GhlAdapter implements ExecutionAdapter {
 
     if (
       eligibility.rememberResource &&
-      !isProtectedLiveGhlRecord(
+      !isProtectedLiveCrmRecord(
+        this.backend.name,
         backendResult.externalResourceId,
         this.protectedRecordHashes,
       )

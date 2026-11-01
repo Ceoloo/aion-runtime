@@ -34,6 +34,8 @@
     "proof:ghl-acceptance-fixtures": "bash scripts/ghl-acceptance-fixtures.sh",
     "proof:rcaos-at": "bash scripts/rcaos-at-proof.sh",
     "proof:rcaos-at-twenty": "bash scripts/rcaos-at-twenty-proof.sh",
+    "proof:twenty-live-acceptance": "bash scripts/twenty-live-acceptance.sh",
+    "check:twenty-live-failclosed": "bash scripts/twenty-live-failclosed-matrix.sh",
     "test:rcaos-rules": "npm run build && node --test dist/rcaos/demo-electrical-smb-v1.test.js",
     "proof:ghl-live-capability": "node scripts/lib/proof-guard.mjs --mode live-capability && node scripts/lib/proof-credential-scope.mjs && node dist/ghl-live-capability-proof.js",
     "proof:ie002": "bash scripts/ie002-proof-matrix.sh",
