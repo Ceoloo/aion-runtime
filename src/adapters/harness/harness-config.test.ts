@@ -4,7 +4,7 @@ import { loadConfig, ConfigError } from '../../config.js';
 import { harnessAdaptersFromConfig } from '../../control-plane.js';
 
 const BASE: Record<string, string> = {
-  DATABASE_URL: 'postgres://aion_app:x@localhost:5432/aion',
+  DATABASE_URL: 'postgresql://aion_app:x@db.example.invalid:5432/aion',
   AION_AUTH_MODE: 'open',
 };
 
