@@ -17,6 +17,7 @@ import {
   Telemetry,
   systemClock,
   MockExecutionAdapter,
+  HarnessExecutionAdapter,
   capability,
   SharedRoom,
 } from '@aion/core';
@@ -32,6 +33,7 @@ import type { RuntimeConfig } from './config.js';
 import type { GatewayAuthConfig } from './auth/types.js';
 import { GhlAdapter, MISSION_009_CAPABILITIES } from './adapters/ghl/index.js';
 import { createCrmBackendFromEnv } from './adapters/crm/index.js';
+import { UhpHarnessProvider } from './adapters/harness/index.js';
 
 /** The low-risk capability used by the boot self-check (aion-infra §45). */
 export const SMOKE_CAPABILITY: Capability = capability('infra.smoke');
@@ -205,6 +207,9 @@ export function buildControlPlane(
         sideEffects: dataLayer.externalSideEffects,
         backend: createCrmBackendFromEnv(),
       }),
+      // ADR-011 UHP / HarnessRouter backend — only when explicitly enabled
+      // (fail-closed kill switch). Sits behind PolicyEngine like every adapter.
+      ...harnessAdaptersFromConfig(config),
     ];
 
   const clock = systemClock;
@@ -263,4 +268,21 @@ export function buildControlPlane(
     },
     close: () => dataLayer.close(),
   };
+}
+
+/**
+ * Builds the optional HarnessExecutionAdapter when HarnessRouter is enabled.
+ * Returns [] when disabled so the registry stays free of a half-wired executor.
+ */
+export function harnessAdaptersFromConfig(
+  config: Pick<RuntimeConfig, 'harnessRouter'>,
+): ExecutionAdapter[] {
+  const hr = config.harnessRouter;
+  if (!hr.enabled || !hr.baseUrl || !hr.apiKey) return [];
+  const provider = new UhpHarnessProvider({
+    baseUrl: hr.baseUrl,
+    apiKey: hr.apiKey,
+    enabled: true,
+  });
+  return [new HarnessExecutionAdapter(provider, { name: 'uhp-harness' })];
 }

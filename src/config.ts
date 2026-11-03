@@ -58,6 +58,15 @@ export interface RuntimeConfig {
   crmProvider: CrmProvider;
   /** Resolved CRM backend (fake vs live) and how it was chosen — validated at startup, reported by /health/ready. */
   crmBackend: CrmBackendChoice;
+  /**
+   * UHP / HarnessRouter execution backend (ADR-011). Disabled by default —
+   * fail-closed kill switch. When enabled, baseUrl + apiKey are required.
+   */
+  harnessRouter: {
+    enabled: boolean;
+    baseUrl?: string;
+    apiKey?: string;
+  };
 }
 
 export class ConfigError extends Error {
@@ -172,6 +181,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     throw err;
   }
 
+  // ADR-011: harness activation is fail-closed. Explicit true required; missing
+  // credentials when enabled refuse to boot (never a half-wired executor).
+  const harnessEnabled = env.HARNESSROUTER_ENABLED === 'true';
+  const harnessBaseUrl = env.HARNESSROUTER_BASE_URL?.trim() || undefined;
+  const harnessApiKey = env.HARNESSROUTER_API_KEY?.trim() || undefined;
+  if (harnessEnabled) {
+    if (!harnessBaseUrl) {
+      throw new ConfigError(
+        'HARNESSROUTER_ENABLED=true requires HARNESSROUTER_BASE_URL',
+      );
+    }
+    if (!harnessApiKey) {
+      throw new ConfigError(
+        'HARNESSROUTER_ENABLED=true requires HARNESSROUTER_API_KEY',
+      );
+    }
+  }
+
   return {
     environment,
     databaseUrl,
@@ -185,6 +212,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     auth,
     crmProvider,
     crmBackend,
+    harnessRouter: {
+      enabled: harnessEnabled,
+      ...(harnessBaseUrl ? { baseUrl: harnessBaseUrl } : {}),
+      ...(harnessApiKey ? { apiKey: harnessApiKey } : {}),
+    },
     release: {
       serviceVersion: env.SERVICE_VERSION ?? 'unknown',
       gitSha: env.GIT_SHA ?? 'unknown',
