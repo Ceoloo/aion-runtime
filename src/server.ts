@@ -26,6 +26,7 @@ import type { ControlPlane } from './control-plane.js';
 import type { RuntimeConfig } from './config.js';
 import type { Logger } from './logger.js';
 import { handleGatewayRequest } from './gateway.js';
+import { gatewayListenHost, openGatewayBoundaryError } from './auth/network-boundary.js';
 
 export interface Server {
   listen(): Promise<void>;
@@ -86,6 +87,12 @@ export function createServer(
       });
     };
 
+    const boundaryError = openGatewayBoundaryError(req, config.auth, config.corsOrigins);
+    if (boundaryError) {
+      send(403, { error: boundaryError });
+      return;
+    }
+
     // CORS preflight — only for allowlisted origins.
     if (method === 'OPTIONS') {
       if (cors) {
@@ -143,12 +150,16 @@ export function createServer(
 
   return {
     listen(): Promise<void> {
-      return new Promise((resolve) => {
-        server.listen(config.port, () => {
+      return new Promise((resolve, reject) => {
+        server.once('error', reject);
+        const host = gatewayListenHost(config.auth);
+        server.listen(config.port, host, () => {
+          server.off('error', reject);
           logger.info('listening', {
             operation: 'startup',
             status: 'ok',
-            port: config.port,
+            port: (server.address() as import('node:net').AddressInfo).port,
+            host,
             cors_origins: String(config.corsOrigins.length),
           });
           resolve();
