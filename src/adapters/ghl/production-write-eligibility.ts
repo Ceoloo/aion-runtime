@@ -9,7 +9,8 @@
  * Synthetic customer evidence may land on a contact this process just created
  * as a fixture (`@example.invalid`, no pre-existing contact id). It may not
  * land on any other live contact, and never on a known production record id
- * (SHA-256 denylist, same set as scripts/lib/production-ids.json).
+ * (SHA-256 denylist, same set as scripts/lib/production-ids.json —
+ * `sha256.ghlRecordIds` for ghl-live, `sha256.twentyRecordIds` for twenty-live).
  */
 import { createHash } from 'node:crypto';
 import type { GhlMutationKind } from './types.js';
@@ -22,6 +23,13 @@ export const PROTECTED_LIVE_GHL_RECORD_SHA256: readonly string[] = [
   'cdfa9019ea6a704d8e098d6a1ff8afe93187d2f328b8973857d485cf066992ef',
 ];
 
+/**
+ * SHA-256 of known production Twenty record ids. Starts empty; populate
+ * `scripts/lib/production-ids.json` → `sha256.twentyRecordIds` when Twenty
+ * production records exist, then mirror the hashes here.
+ */
+export const PROTECTED_LIVE_TWENTY_RECORD_SHA256: readonly string[] = [];
+
 export const SYNTHETIC_TO_PRODUCTION_DENIED = 'SYNTHETIC_TO_PRODUCTION_DENIED';
 
 /**
@@ -29,6 +37,16 @@ export const SYNTHETIC_TO_PRODUCTION_DENIED = 'SYNTHETIC_TO_PRODUCTION_DENIED';
  * the OL-001 note is just as wrong on a Twenty record as on a GHL one.
  */
 const LIVE_CRM_BACKENDS: ReadonlySet<string> = new Set(['ghl-live', 'twenty-live']);
+
+/** Default denylist for a live backend (GHL and Twenty lists stay separate). */
+export function defaultProtectedHashesForBackend(
+  backendName: string,
+): readonly string[] {
+  if (backendName === 'twenty-live') {
+    return PROTECTED_LIVE_TWENTY_RECORD_SHA256;
+  }
+  return PROTECTED_LIVE_GHL_RECORD_SHA256;
+}
 
 /**
  * Writes that become customer intelligence on a contact: notes, tasks,
@@ -71,6 +89,23 @@ export function isProtectedLiveGhlRecord(
   protectedHashes: readonly string[] = PROTECTED_LIVE_GHL_RECORD_SHA256,
 ): boolean {
   return protectedHashes.includes(sha256Hex(id));
+}
+
+export function isProtectedLiveTwentyRecord(
+  id: string,
+  protectedHashes: readonly string[] = PROTECTED_LIVE_TWENTY_RECORD_SHA256,
+): boolean {
+  return protectedHashes.includes(sha256Hex(id));
+}
+
+/** Provider-aware alias used when remembering fixture creates. */
+export function isProtectedLiveCrmRecord(
+  backendName: string,
+  id: string,
+  protectedHashes?: readonly string[],
+): boolean {
+  const hashes = protectedHashes ?? defaultProtectedHashesForBackend(backendName);
+  return hashes.includes(sha256Hex(id));
 }
 
 export interface LiveWriteEligibilityInput {
@@ -116,7 +151,7 @@ export function assessLiveCustomerWrite(
   }
 
   const protectedHashes = new Set(
-    input.protectedHashes ?? PROTECTED_LIVE_GHL_RECORD_SHA256,
+    input.protectedHashes ?? defaultProtectedHashesForBackend(input.backendName),
   );
   const targets = targetIds(input.payload);
   if (targets.some((id) => protectedHashes.has(sha256Hex(id)))) {

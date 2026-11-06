@@ -6,12 +6,14 @@ fake-backend proofs, an **explicit `GHL_BACKEND=fake`**. Credentials never selec
 
 | Mode | Used by | Allowed only when |
 |---|---|---|
-| `fake` (default) | all proofs except the two below | no GHL credentials/`GHL_API_BASE_URL`/`GHL_BACKEND=live`, not `AION_ENVIRONMENT=production`, no production runtime URL, and any target DB has no production markers and no non-proof data |
+| `fake` (default) | all proofs except the live ones below | no GHL credentials/`GHL_API_BASE_URL`/`GHL_BACKEND=live`, not `AION_ENVIRONMENT=production`, no production runtime URL, and any target DB has no production markers and no non-proof data |
 | `live-capability`, `live-acceptance` | `proof:ghl-live-capability`, `proof:ghl-live-acceptance` | **all** of: `AION_PROOF_LIVE=1`, `GHL_BACKEND=live`, location in `AION_PROOF_GHL_TEST_LOCATIONS` (allowlist), `AION_PROOF_CREDENTIAL_SCOPE=test-location`, explicit `GHL_ACCEPTANCE_TENANT`/`_CONTACT_ID`/`_OPPORTUNITY_ID`/`_PRIOR_STAGE`/`_TARGET_STAGE` (no defaults), and none of them a known production identifier; `live-capability` also needs an explicit loopback/allowlisted `AION_RUNTIME_URL` |
+| `live-twenty` | `proof:twenty-live-acceptance` (Gate C; **not** default CI) | **all** of: `AION_PROOF_LIVE=1`, `CRM_PROVIDER=twenty`, `TWENTY_BACKEND=live`, `TWENTY_API_BASE_URL` + `TWENTY_API_KEY`, `AION_PROOF_CREDENTIAL_SCOPE=disposable-twenty`, explicit `TWENTY_ACCEPTANCE_TENANT`, loopback/allowlisted `AION_RUNTIME_URL`, no GHL live credentials; optional `TWENTY_API_KEY_B` for cross-tenant (must differ from primary) |
 | `live-aio17` | — | **never** (blocked pending an authorized test tenant) |
 
 Known production identifiers are stored **only as SHA-256** in `production-ids.json` (tenants and runtime hosts in
-clear — they are already public). `AION_PRODUCTION_*_SHA256` can add denied hashes, never remove one.
+clear — they are already public). Includes `sha256.ghlRecordIds` and `sha256.twentyRecordIds` (Twenty list may start empty).
+`AION_PRODUCTION_*_SHA256` can add denied hashes, never remove one.
 `AION_PROOF_DB_DISPOSABLE=1` (set job-wide in CI) skips only the "DB already holds non-proof rows" check, is honored
 only when `GITHUB_ACTIONS=true`, and never skips production markers (`ol_metrics` schema, production-economic missions).
 

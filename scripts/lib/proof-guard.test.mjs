@@ -88,6 +88,60 @@ test('live-acceptance uses the same requirements', () => refused(run('live-accep
 test('live-aio17 is refused unconditionally, even with a fully valid live configuration', () => refused(run('live-aio17', LIVE()), /BLOCKED/));
 test('unknown mode is refused', () => refused(run('sandbox'), /unknown mode/));
 
+// ---- live-twenty (Gate C disposable) -----------------------------------------------------------------------
+const LIVE_TWENTY = () => ({
+  AION_PROOF_LIVE: '1',
+  CRM_PROVIDER: 'twenty',
+  TWENTY_BACKEND: 'live',
+  TWENTY_API_BASE_URL: 'http://127.0.0.1:3999',
+  TWENTY_API_KEY: 'staging-disposable-key',
+  AION_PROOF_CREDENTIAL_SCOPE: 'disposable-twenty',
+  TWENTY_ACCEPTANCE_TENANT: 'aion-proof-synthetic',
+  AION_RUNTIME_URL: base,
+  AION_PRODUCTION_ENV_FILE: '/nonexistent',
+});
+test('live-twenty: a fully explicit disposable staging configuration is allowed', () => {
+  const r = run('live-twenty', LIVE_TWENTY());
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /EXPLICIT LIVE TWENTY MODE/);
+});
+const withoutTwenty = (k) => { const e = LIVE_TWENTY(); delete e[k]; return e; };
+for (const [k, frag] of [
+  ['AION_PROOF_LIVE', /AION_PROOF_LIVE=1/],
+  ['CRM_PROVIDER', /CRM_PROVIDER=twenty/],
+  ['TWENTY_BACKEND', /TWENTY_BACKEND=live/],
+  ['TWENTY_API_BASE_URL', /TWENTY_API_BASE_URL not set/],
+  ['TWENTY_API_KEY', /TWENTY_API_KEY not set/],
+  ['AION_PROOF_CREDENTIAL_SCOPE', /disposable-twenty/],
+  ['TWENTY_ACCEPTANCE_TENANT', /TWENTY_ACCEPTANCE_TENANT/],
+  ['AION_RUNTIME_URL', /AION_RUNTIME_URL must be set/],
+]) test(`live-twenty: refuses when ${k} is missing`, () => refused(run('live-twenty', withoutTwenty(k)), frag));
+test('live-twenty: refuses GHL credentials', () =>
+  refused(run('live-twenty', { ...LIVE_TWENTY(), GHL_API_KEY: 'k' }), /GHL_API_KEY/));
+test('live-twenty: refuses GHL_BACKEND=live', () =>
+  refused(run('live-twenty', { ...LIVE_TWENTY(), GHL_BACKEND: 'live' }), /GHL_BACKEND=live/));
+test('live-twenty: refuses production tenant', () =>
+  refused(run('live-twenty', { ...LIVE_TWENTY(), TWENTY_ACCEPTANCE_TENANT: 'aion-systems' }), /production tenant/));
+test('live-twenty: refuses identical TWENTY_API_KEY_B', () =>
+  refused(run('live-twenty', { ...LIVE_TWENTY(), TWENTY_API_KEY_B: 'staging-disposable-key' }), /TWENTY_API_KEY_B must differ/));
+test('live-twenty: refuses a known PRODUCTION Twenty record id when supplied', () =>
+  refused(run('live-twenty', {
+    ...LIVE_TWENTY(),
+    TWENTY_ACCEPTANCE_CONTACT_ID: 'prod_twenty_person',
+    AION_PRODUCTION_TWENTY_RECORD_SHA256: sha('prod_twenty_person'),
+  }), /PRODUCTION Twenty record id/));
+test('npm proof:twenty-live-acceptance refuses (guard runs first) without live env', () => {
+  const r = spawnSync('npm', ['run', '--silent', 'proof:twenty-live-acceptance'], {
+    cwd: root,
+    env: { ...CLEAN },
+    encoding: 'utf8',
+    timeout: 30000,
+  });
+  assert.equal(r.status, 3);
+  assert.match(r.stderr, /AION_PROOF_LIVE=1/);
+  assert.equal(hits, 0);
+});
+
 // ---- every proof script is guarded, and refuses before doing anything -----------------------------------------
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const shFiles = fs.readdirSync(path.join(root, 'scripts')).filter((f) => f.endsWith('.sh'));
@@ -100,7 +154,9 @@ test('structural: every proof:* npm script is routed through the guard', () => {
 });
 test('structural: live proofs verify credential ISOLATION (not just an attestation)', () => {
   assert.match(pkg.scripts['proof:ghl-live-capability'], /proof-credential-scope\.mjs/);
-  assert.match(fs.readFileSync(path.join(here, 'proof-env.sh'), 'utf8'), /live-\*\) node .*proof-credential-scope\.mjs/);
+  const prelude = fs.readFileSync(path.join(here, 'proof-env.sh'), 'utf8');
+  assert.match(prelude, /live-capability\|live-acceptance\) node .*proof-credential-scope\.mjs/);
+  assert.match(prelude, /live-twenty skips GHL credential-scope/);
 });
 test('structural: every script that starts a runtime, or is named proof/acceptance/certification, sources the prelude', () => {
   for (const f of shFiles) {

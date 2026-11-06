@@ -121,9 +121,10 @@ Synthetic evidence is eligible only when:
 
 It is refused with `SYNTHETIC_TO_PRODUCTION_DENIED` when the target is
 anything else, and always when the target id hashes to
-`PROTECTED_LIVE_GHL_RECORD_SHA256` (kept equal to
-`production-ids.json`). The refusal returns before `backend.execute`,
-so LeadConnector is not called and no succeeded side-effect row is
+`PROTECTED_LIVE_GHL_RECORD_SHA256` / `PROTECTED_LIVE_TWENTY_RECORD_SHA256`
+(kept equal to `production-ids.json` `sha256.ghlRecordIds` /
+`sha256.twentyRecordIds`). The refusal returns before `backend.execute`,
+so the live CRM is not called and no succeeded side-effect row is
 inserted.
 
 A payload that is not synthetic does not receive a boundary allow.
