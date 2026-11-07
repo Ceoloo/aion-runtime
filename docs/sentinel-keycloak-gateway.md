@@ -70,3 +70,12 @@ The mapping/schema repository source pins in `scripts/setup-deps.mjs` are
 **draft commit SHAs**, not released supply-chain artifacts. After Data and
 Sentinel PRs merge, refresh the pins to independently reviewed main commits
 and rerun the full acceptance/image pipeline.
+
+## Pull-request image smoke
+
+The draft Runtime branch now also runs a GitHub Actions **PR-only image boot
+check** after the full verify job. The image is loaded locally on the CI runner
+and never pushed to any registry. It exercises the same ephemeral PostgreSQL
+migration and non-root Runtime boot as `scripts/image-boot-check.sh`. It
+validates packaging and default API-key boot, **not** Keycloak interoperability
+or production readiness. Real Keycloak staging remains a separate human gate.
