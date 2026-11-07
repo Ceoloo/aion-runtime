@@ -28,7 +28,9 @@ const SENTINEL_REPO = process.env.AION_SENTINEL_REPO ?? 'https://github.com/Ceol
 // revenue_sessions overlay; aion-data's runner reconciles DBs migrated on that
 // old lineage — see aion-data/migrations/README.md.)
 const CORE_REF = process.env.AION_CORE_REF ?? '7eca6a208224fda0de00e8549ba73d3542b2f2bb';
-const DATA_REF = process.env.AION_DATA_REF ?? '66f7f9cc5c9ad544073a789342d6fe8b32947582';
+// Review-only pin to Data PR #29 for Forge audit repository/migration 0016.
+// DO NOT PROMOTE before Data PR merges; repin to a reviewed main commit.
+const DATA_REF = process.env.AION_DATA_REF ?? 'd0906cf9aedb3975a5fec0c29185ad0e773db0c6';
 // Sentinel v0.2 provides verified Keycloak JWT parsing; Runtime remains the
 // authoritative gateway. The pinned source is reviewed alongside this PR.
 const SENTINEL_REF = process.env.AION_SENTINEL_REF ?? 'b2ff8d26e0a0c2ed3265bb72440f346fc15d80b7';

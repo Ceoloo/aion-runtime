@@ -79,6 +79,13 @@ jobs:
           GIT_SHA: ${{ github.sha }}
         run: npm run acceptance
 
+      - name: Forge AIO-73 — disposable signed JWT + durable audit proof (no execution)
+        env:
+          MIGRATION_DATABASE_URL: postgresql://aion_migrator:ci_migrator@localhost:5432/aion_data
+          DATABASE_URL: postgresql://aion_app:ci_app@localhost:5432/aion_data
+          DATABASE_SSL: 'false'
+        run: npm run proof:forge-trust
+
       - name: Mission 001 proof matrix (PASS A/B/C/D)
         env:
           MIGRATION_DATABASE_URL: postgresql://aion_migrator:ci_migrator@localhost:5432/aion_data
