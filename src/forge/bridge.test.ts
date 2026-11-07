@@ -32,7 +32,7 @@ function jwt(overrides:Record<string,unknown>={},key=privateKey){
 function request(body:unknown,token=jwt(),tenantId='tenant-a'):IncomingMessage{
   const raw=JSON.stringify(body);
   return {headers:{authorization:'Bearer '+token,'x-aion-tenant-id':tenantId},
-    async *[Symbol.asyncIterator](){yield Buffer.from(raw);}} as IncomingMessage;
+    async *[Symbol.asyncIterator](){yield Buffer.from(raw);}} as unknown as IncomingMessage;
 }
 const requestId='forge-12345678-1234-4234-a234-123456789abc';
 function forgeBody(overrides:Record<string,unknown>={}){
@@ -49,7 +49,7 @@ function harness({
 }={}){
   const actor=createHumanActor({name:'Synthetic Security Operator',
     permissions:permissions?[capability('forge.session.launch')]:[],allowedTools:[]});
-  const durableActor:Actor={...actor,...actorOverride};
+  const durableActor={...actor,...actorOverride} as Actor;
   const binding={issuer,subject:'subject-proof-1',clientId,
     principalId:'principal-proof-1',actorId:actor.actorId,kind:'operator' as const,
     tenantIds:['tenant-a'],roles:[role],status:'active' as const};
