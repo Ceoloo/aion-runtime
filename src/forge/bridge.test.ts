@@ -41,7 +41,7 @@ function forgeBody(overrides:Record<string,unknown>={}){
     metadata:{source:'aion-forge',forgeRequestId:requestId},environment:'staging',...overrides};
 }
 function harness({
-  bindingActive=true,permissions=true, auditFails=false, role:'invoke'= 'invoke',
+  bindingActive=true,permissions=true, auditFails=false, role='invoke',
   mode='keycloak' as 'keycloak'|'api-key',actorOverride,
 }:{
   bindingActive?:boolean;permissions?:boolean;auditFails?:boolean;
