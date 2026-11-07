@@ -130,7 +130,8 @@ test('cross-tenant header, absent capability, revoked Actor kind and body spoof 
   const noGrant=harness({permissions:false});
   assert.equal((await call(noGrant,forgeBody()))?.status,403);
   const wrongKind=harness({actorOverride:{actorType:'service'} as Partial<Actor>});
-  assert.equal((await call(wrongKind,forgeBody()))?.status,403);
+  // Sentinel checks durable Actor kind before Runtime's Forge handler; mismatch is 401.
+  assert.equal((await call(wrongKind,forgeBody()))?.status,401);
   const spoof=harness();
   const raw=forgeBody({actor:{actorId:'attacker',permissions:['forge.session.launch'],maxRiskLevel:'R3'}});
   const resp=await handleGatewayRequest('POST','/v1/commands',request(raw),spoof.cp,logger);
