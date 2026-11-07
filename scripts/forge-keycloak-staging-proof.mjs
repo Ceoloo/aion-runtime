@@ -154,7 +154,7 @@ const evidence={
   checks,
   note:'Contains no bearer values, passwords, keys, customer identities or environment secrets',
   pending:['authorized persistent staging endpoint and operator approval',
-    'remote key rollover, JWKS outage and logout-session policy probes',
+    'persistent staging remote key rollover and JWKS outage, logout-session policy sign-off',
     'MFA, privileged review, rollback digest and independent security signature'],
 };
 try {
@@ -263,6 +263,89 @@ try {
     [actor.actorId,JSON.stringify(actor.permissions)]);
   ok('disabled binding and removed durable Actor permission deny without relying on JWT roles');
 
+
+  // Real Keycloak rotation on a disposable realm. The prior signing key
+  // remains published while new tokens use the higher-priority key.
+  const realm=await requestJson('/admin/realms/aion-forge-ci',{
+    headers:{Authorization:'Bearer '+token}
+  });
+  assert.equal(typeof realm.id,'string');
+  const originalKid=JSON.parse(Buffer.from(accessToken.split('.')[0],'base64url').toString()).kid;
+  const rotatedProvider={
+    name:'forge-ci-generated-rotation',providerId:'rsa-generated',
+    providerType:'org.keycloak.keys.KeyProvider',parentId:realm.id,
+    config:{priority:['210'],enabled:['true'],active:['true'],
+      keySize:['2048'],algorithm:['RS256']}
+  };
+  await requestJson('/admin/realms/aion-forge-ci/components',{
+    method:'POST',headers:bearerHeader(token),body:JSON.stringify(rotatedProvider)
+  });
+  const rotatedToken=await tokenFor(clientId);
+  const rotatedKid=JSON.parse(Buffer.from(rotatedToken.split('.')[0],'base64url').toString()).kid;
+  assert.ok(rotatedKid && originalKid && rotatedKid!==originalKid,
+    'Keycloak did not switch to new signing key');
+  const rotatedJwks=await requestJson('/realms/aion-forge-ci/protocol/openid-connect/certs');
+  assert.ok(rotatedJwks.keys.some(k=>k.kid===rotatedKid));
+  assert.ok(rotatedJwks.keys.some(k=>k.kid===originalKid),
+    'old signing key removed before overlap period');
+  const rotatedBody={...body,requestId:'forge-'+randomUUID()};
+  rotatedBody.metadata={source:'aion-forge',forgeRequestId:rotatedBody.requestId};
+  let rotatedResponse=await runtimePost(rotatedToken,rotatedBody);
+  // Sentinel's jose remote JWK set has a bounded 30s refresh cooldown.
+  // If the new kid arrives inside that window it is temporarily denied.
+  if(rotatedResponse.status===401){
+    await new Promise(resolve=>setTimeout(resolve,31_000));
+    rotatedResponse=await runtimePost(rotatedToken,rotatedBody);
+  }
+  assert.equal(rotatedResponse.status,409,'rotated key not verified after bounded refresh');
+  assert.equal(rotatedResponse.body.error,'forge_execution_disabled');
+  assert.equal((await runtimePost(accessToken,body)).status,409,
+    'old signing key should verify during safe overlap');
+  evidence.rotation={oldKeyPreserved:true,newKeyPublished:true,
+    newTokenAccepted:true,cacheCooldownMaxSeconds:30};
+  ok('real Keycloak RS256 signing-key rotation, JWKS refresh and old-key overlap');
+
+  // Short-lived token lifetime test uses the same disposable realm. The
+  // existing valid accessToken must remain intact while expiry is tested.
+  await requestJson('/admin/realms/aion-forge-ci',{
+    method:'PUT',headers:bearerHeader(token),
+    body:JSON.stringify({...realm,accessTokenLifespan:1})
+  });
+  const shortToken=await tokenFor(clientId);
+  const shortClaims=parseJwt(shortToken);
+  assert.ok(shortClaims.exp-shortClaims.iat<=2);
+  await new Promise(resolve=>setTimeout(resolve,8_000)); // 5s Sentinel clock tolerance
+  assert.equal((await runtimePost(shortToken,body)).status,401,
+    'expired Keycloak access token was accepted');
+  await requestJson('/admin/realms/aion-forge-ci',{
+    method:'PUT',headers:bearerHeader(token),
+    body:JSON.stringify({...realm,accessTokenLifespan:180})
+  });
+  ok('actual short-lived Keycloak token expires and fails closed');
+
+  // Keycloak logout invalidates SSO, NOT already-signed access-token
+  // signatures. Runtime must rely on short TTL + durable binding revocation
+  // for emergency invalidation; do not overclaim instant JWT logout.
+  await requestJson('/admin/realms/aion-forge-ci/users/'+subject+'/logout',{
+    method:'POST',headers:bearerHeader(token)
+  });
+  const logoutStillValid=await runtimePost(rotatedToken,rotatedBody);
+  assert.equal(logoutStillValid.status,409,
+    'unexpected logout behavior; review session validity assumptions');
+  await admin.query(
+    "UPDATE aion_auth.principal_bindings SET status='revoked' WHERE issuer=$1 AND subject=$2 AND client_id=$3",
+    [issuer,subject,clientId]
+  );
+  assert.equal((await runtimePost(rotatedToken,rotatedBody)).status,401,
+    'durable binding revocation must stop a previously signed JWT');
+  await admin.query(
+    "UPDATE aion_auth.principal_bindings SET status='active' WHERE issuer=$1 AND subject=$2 AND client_id=$3",
+    [issuer,subject,clientId]
+  );
+  evidence.logout={signedTokenMayRemainValidUntilExpiry:true,
+    immediateRevocationRequiresDurableBinding:true};
+  ok('Keycloak logout limitation documented; AION durable revoke denies cached signed token');
+
   const priv=await admin.query(
     "SELECT has_table_privilege('aion_app','public.forge_audit_events','UPDATE') AS update_allowed, has_table_privilege('aion_app','public.forge_audit_events','DELETE') AS delete_allowed, has_table_privilege('aion_app','aion_auth.principal_bindings','INSERT') AS binding_insert");
   assert.equal(priv.rows[0].update_allowed,false);
@@ -281,6 +364,28 @@ try {
   assert.equal(denied.body.error,'forge_audit_unavailable');
   await admin.query('GRANT INSERT ON public.forge_audit_events TO aion_app');
   ok('actual PostgreSQL audit-writer outage fails closed with redacted HTTP 503');
+
+  // End-of-proof availability drill: stop ONLY the uniquely named disposable
+  // Keycloak CI container and verify an uncached Sentinel JWKS verifier denies.
+  // Warm JWKS caches can still verify old signatures, but a revoked mapping
+  // must continue to take priority even while the issuer is unreachable.
+  const {execFileSync}=await import('node:child_process');
+  execFileSync('docker',['stop','aion-forge-keycloak-ci'],{
+    timeout:20_000,stdio:'ignore'
+  });
+  const {createKeycloakRuntimeVerifier}=await import('../dist/auth/keycloak-gateway.js');
+  const coldVerifier=createKeycloakRuntimeVerifier(config.auth,cp.dataLayer);
+  const cold=await coldVerifier({credential:rotatedToken});
+  assert.equal(cold.verified,false,'cold JWKS failure must deny');
+  await admin.query(
+    "UPDATE aion_auth.principal_bindings SET status='revoked' WHERE issuer=$1 AND subject=$2 AND client_id=$3",
+    [issuer,subject,clientId]
+  );
+  assert.equal((await runtimePost(rotatedToken,rotatedBody)).status,401);
+  evidence.outage={coldVerifierFailsClosed:true,
+    warmedVerifierStillChecksDurableBinding:true};
+  ok('remote HTTPS JWKS outage denies cold verifier and durable revoke blocks cached credentials');
+
   evidence.approvedDeployment=false;
   evidence.realStagingDeployment=false;
   evidence.summary='CI interoperability passed; NO agent or terminal started; no staging approval issued';
