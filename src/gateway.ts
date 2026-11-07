@@ -83,6 +83,7 @@
 import type { IncomingMessage } from 'node:http';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { bindRequestTenant, enterRequestTenant } from './tenant-context.js';
+import { isForgeCommand, handleForgeSessionAttestation } from './forge/bridge.js';
 import {
   Actor,
   ApprovalDecision,
@@ -359,7 +360,13 @@ export async function handleGatewayRequest(
     );
 
     if (method === 'POST' && path === '/v1/commands') {
-      return await submitCommand(await readJsonBody(req), cp, logger, principal, req);
+      const body = await readJsonBody(req);
+      // Only the existing gateway may accept Forge requests. Until worker,
+      // catalog and R3 approval are reviewed, this lane records audited
+      // identity evidence and ALWAYS denies execution.
+      if (isForgeCommand(body))
+        return await handleForgeSessionAttestation(body, cp, principal, req);
+      return await submitCommand(body, cp, logger, principal, req);
     }
 
     if (method === 'POST' && path === '/v1/proof/fake-ghl/seed-appointment') {

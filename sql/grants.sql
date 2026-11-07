@@ -58,6 +58,9 @@ ALTER DEFAULT PRIVILEGES FOR ROLE aion_migrator IN SCHEMA public
 -- the app role may INSERT and SELECT but never UPDATE or DELETE history.
 REVOKE UPDATE, DELETE ON events            FROM aion_app;
 REVOKE UPDATE, DELETE ON telemetry_records FROM aion_app;
+-- Forge audit evidence is append-only EVEN AFTER the blanket public-table
+-- DML grant above. This must remain explicit when migration 0016 is deployed.
+REVOKE UPDATE, DELETE ON forge_audit_events FROM aion_app;
 ALTER DEFAULT PRIVILEGES FOR ROLE aion_migrator IN SCHEMA public
   REVOKE UPDATE, DELETE ON TABLES FROM aion_app;
 -- (The blanket default-privilege revoke above keeps the app role INSERT/SELECT
