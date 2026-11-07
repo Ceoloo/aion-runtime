@@ -50,7 +50,7 @@
     "test:proof-safety": "npm run build && node --test dist/adapters/ghl/backend-selection.test.js dist/adapters/ghl/production-write-eligibility.test.js dist/adapters/crm/provider-selection.test.js dist/adapters/crm/live-twenty-backend.test.js scripts/lib/proof-guard.test.mjs scripts/lib/proof-credential-scope.test.mjs",
     "test:keycloak": "npm run build && node --test dist/auth/keycloak-gateway.test.js",
     "test:forge": "npm run build && node --test dist/forge/bridge.test.js",
-    "proof:forge-trust": "npm run build && node scripts/forge-trust-proof.mjs"
+    "proof:forge-trust": "node scripts/lib/proof-guard.mjs --mode fake && npm run build && node scripts/forge-trust-proof.mjs"
   },
   "dependencies": {
     "@aion/core": "file:vendor/aion-core",
