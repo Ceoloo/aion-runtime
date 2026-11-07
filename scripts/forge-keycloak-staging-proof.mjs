@@ -12,7 +12,6 @@ import pg from 'pg';
 import { createServer } from '../dist/server.js';
 import { buildControlPlane } from '../dist/control-plane.js';
 import { loadConfig } from '../dist/config.js';
-import { runWithTenant } from '../dist/tenant-context.js';
 import { Logger } from '../dist/logger.js';
 import { createHumanActor, capability } from '@aion/core';
 
@@ -39,6 +38,9 @@ const adminUsername='forge-proof-admin';
 const username='forge-ci-operator';
 const requestId='forge-'+randomUUID();
 const admin=new pg.Pool({connectionString:process.env.MIGRATION_DATABASE_URL});
+// Raw DataLayer.pool is intentionally not tenant-scoped; a fresh nonowner
+// connection must bind aion.tenant_id explicitly to test RLS correctly.
+const nonOwner=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const logger=new Logger({service:'forge-keycloak-proof',environment:'test',
   gitSha:'local-ephemeral',serviceVersion:'proof'},'error');
 const checks=[];
@@ -133,7 +135,11 @@ function command(actorId){
     environment:'staging'};
 }
 async function appQuery(scope,sql,params=[]){
-  return runWithTenant(scope,()=>cp.dataLayer.pool.query(sql,params));
+  const client=await nonOwner.connect();
+  try{
+    await client.query('SELECT set_config($1,$2,false)', ['aion.tenant_id',scope]);
+    return await client.query(sql,params);
+  }finally{client.release();}
 }
 const evidence={
   schema:'aion.forge.real-keycloak-ci.v1',
@@ -291,5 +297,6 @@ try {
   }catch{process.exitCode=1;}
   try{if(server)await server.close();}catch{process.exitCode=1;}
   try{if(cp)await cp.close();}catch{process.exitCode=1;}
+  await nonOwner.end();
   await admin.end();
 }
