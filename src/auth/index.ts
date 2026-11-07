@@ -5,6 +5,7 @@ export type {
   PrincipalRole,
   ApiKeyRecord,
   GatewayAuthConfig,
+  KeycloakGatewayConfig,
   AuthFailureCode,
 } from './types.js';
 export { loadGatewayAuthConfig, resolveAuthMode } from './config.js';
@@ -20,3 +21,5 @@ export {
   resolveApproverActor,
   type ResolveActorResult,
 } from './resolve-actor.js';
+
+export { authenticateGatewayRequest, createKeycloakRuntimeVerifier } from './keycloak-gateway.js';

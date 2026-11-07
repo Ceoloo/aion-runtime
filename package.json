@@ -52,7 +52,8 @@
   "dependencies": {
     "@aion/core": "file:vendor/aion-core",
     "@aion/data": "file:vendor/aion-data",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "@aion/sentinel": "file:vendor/aion-sentinel"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const CORE_REPO = process.env.AION_CORE_REPO ?? 'https://github.com/Ceoloo/aion-core';
 const DATA_REPO = process.env.AION_DATA_REPO ?? 'https://github.com/Ceoloo/aion-data';
+const SENTINEL_REPO = process.env.AION_SENTINEL_REPO ?? 'https://github.com/Ceoloo/AION-SENTINEL';
 // Platform-aligned pins: Core and Data on one reachable lineage. CORE_REF must
 // equal aion-data/scripts/setup-core.mjs CORE_REF and aion-products'
 // scripts/setup-core.sh CORE_SHA — one contract surface across the system.
@@ -27,7 +28,10 @@ const DATA_REPO = process.env.AION_DATA_REPO ?? 'https://github.com/Ceoloo/aion-
 // revenue_sessions overlay; aion-data's runner reconciles DBs migrated on that
 // old lineage — see aion-data/migrations/README.md.)
 const CORE_REF = process.env.AION_CORE_REF ?? '7eca6a208224fda0de00e8549ba73d3542b2f2bb';
-const DATA_REF = process.env.AION_DATA_REF ?? '946ca4bfdeba41e025f2e4f57b97a4a8cfb5e5db';
+const DATA_REF = process.env.AION_DATA_REF ?? 'c1cd3b3f3a5c4e7b63eec7fe1887a6398331a85f';
+// Sentinel v0.2 provides verified Keycloak JWT parsing; Runtime remains the
+// authoritative gateway. The pinned source is reviewed alongside this PR.
+const SENTINEL_REF = process.env.AION_SENTINEL_REF ?? 'b2ff8d26e0a0c2ed3265bb72440f346fc15d80b7';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const vendor = resolve(root, 'vendor');
@@ -71,7 +75,17 @@ function main() {
     run('npm run build', dataDir);
   }
 
-  console.log('[setup-deps] vendor/aion-core + vendor/aion-data ready.');
+  // ── aion-sentinel — verified OIDC library, NOT a second gateway ────────
+  const sentinelDir = resolve(vendor, 'aion-sentinel');
+  if (!existsSync(resolve(sentinelDir, 'src', 'index.mjs'))) {
+    rmSync(sentinelDir, { recursive: true, force: true });
+    run(`git clone --quiet ${SENTINEL_REPO} "${sentinelDir}"`, vendor);
+    run(`git fetch --quiet origin ${SENTINEL_REF}`, sentinelDir);
+    run(`git checkout --quiet ${SENTINEL_REF}`, sentinelDir);
+    run('npm ci --ignore-scripts --no-audit --no-fund', sentinelDir);
+  }
+
+  console.log('[setup-deps] vendor/aion-core + vendor/aion-data + vendor/aion-sentinel ready.');
 }
 
 main();

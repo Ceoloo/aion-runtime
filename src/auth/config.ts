@@ -136,12 +136,38 @@ export function loadGatewayAuthConfig(
   env: NodeJS.ProcessEnv,
   environment: 'local' | 'staging' | 'production',
 ): GatewayAuthConfig {
+  const provider = env.AION_AUTH_PROVIDER ?? 'api-key';
+  if (provider !== 'api-key' && provider !== 'keycloak') {
+    throw new AuthConfigError('AION_AUTH_PROVIDER must be api-key or keycloak');
+  }
   const mode = resolveAuthMode(environment, env.AION_AUTH_MODE);
   const apiKeys = parseApiKeys(env.AION_GATEWAY_API_KEYS);
-  if (mode === 'required' && apiKeys.length === 0) {
-    throw new AuthConfigError(
-      'AION_AUTH_MODE=required requires at least one entry in AION_GATEWAY_API_KEYS',
-    );
+  if (provider === 'api-key') {
+    if (mode === 'required' && apiKeys.length === 0) {
+      throw new AuthConfigError(
+        'AION_AUTH_MODE=required requires at least one entry in AION_GATEWAY_API_KEYS',
+      );
+    }
+    return { mode, apiKeys, provider };
   }
-  return { mode, apiKeys };
+  if (mode !== 'required') {
+    throw new AuthConfigError('Keycloak provider requires AION_AUTH_MODE=required');
+  }
+  if (apiKeys.length > 0) {
+    throw new AuthConfigError('Keycloak provider does not permit API-key fallback');
+  }
+  const issuer = env.AION_KEYCLOAK_ISSUER?.trim();
+  const audience = env.AION_KEYCLOAK_AUDIENCE?.trim();
+  const allowedClients = (env.AION_KEYCLOAK_ALLOWED_CLIENTS ?? '')
+    .split(',').map((x) => x.trim()).filter(Boolean);
+  if (!issuer || !audience || allowedClients.length === 0) {
+    throw new AuthConfigError('Keycloak provider requires issuer, audience and allowed client IDs');
+  }
+  // Full realm URL validation happens in createKeycloakVerifier before boot.
+  return {
+    mode,
+    apiKeys: [],
+    provider,
+    keycloak: { issuer, audience, allowedClients },
+  };
 }
