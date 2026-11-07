@@ -21,6 +21,7 @@ COPY scripts/ ./scripts/
 # Vendor the real workload (pinned commits) then install + build.
 ARG AION_CORE_REF
 ARG AION_DATA_REF
+ARG AION_SENTINEL_REF
 RUN node scripts/setup-deps.mjs
 RUN npm install --no-audit --no-fund
 
@@ -75,6 +76,10 @@ RUN set -eux; \
         ( cd "$d" && npm prune --omit=dev --ignore-scripts --no-audit --no-fund ) || true; \
       fi; \
     done; \
+    rm -rf vendor/aion-sentinel/.git vendor/aion-sentinel/test \
+           vendor/aion-sentinel/docs vendor/aion-sentinel/.github; \
+    (cd vendor/aion-sentinel && npm prune --omit=dev --ignore-scripts --no-audit --no-fund); \
+    rm -f vendor/aion-sentinel/package-lock.json; \
     rm -f package-lock.json; \
     npm prune --omit=dev --ignore-scripts --no-audit --no-fund || true; \
     for nm in node_modules vendor/aion-core/node_modules vendor/aion-data/node_modules \
@@ -91,7 +96,7 @@ RUN set -eux; \
       echo "FAIL: development tooling survived the vendor sanitize" >&2; exit 1; \
     fi; \
     if find . -maxdepth 6 -name .git -print -quit | grep -q .; then echo "FAIL: .git in build tree" >&2; exit 1; fi; \
-    node --input-type=module -e "await import('@aion/core'); await import('@aion/data'); console.log('vendored @aion/* production-safe and resolve')"
+    node --input-type=module -e "await import('@aion/core'); await import('@aion/data'); await import('@aion/sentinel'); console.log('vendored @aion/* production-safe and resolve')"
 
 # ---- runtime stage ---------------------------------------------------------
 FROM node:22-bookworm-slim AS runtime
@@ -117,10 +122,12 @@ COPY --from=build --chown=node:node /build/package.json ./package.json
 RUN set -eux; \
     test -s node_modules/@aion/core/dist/index.js; \
     test -s node_modules/@aion/data/dist/index.js; \
+    test -s node_modules/@aion/sentinel/src/index.mjs; \
     find node_modules/@aion/data/migrations -name '*.sql' | grep -q .; \
     test -s dist/index.js; \
     test ! -d vendor/aion-core/.git; \
     test ! -d vendor/aion-data/.git; \
+    test ! -d vendor/aion-sentinel/.git; \
     test ! -d vendor/aion-data/vendor/aion-core/.git; \
     test ! -d vendor/aion-core/src; \
     test ! -d vendor/aion-data/src; \
@@ -129,7 +136,7 @@ RUN set -eux; \
         -o -name vitest -o -name eslint -o -name tsx -o -name '@typescript-eslint' \
         -o -name esbuild -o -name '@esbuild' -o -name rollup -o -name '@rollup' \) \
       -print | grep -q .; \
-    node --input-type=module -e "await import('@aion/core'); await import('@aion/data'); console.log('runtime image self-check OK')"
+    node --input-type=module -e "await import('@aion/core'); await import('@aion/data'); await import('@aion/sentinel'); console.log('runtime image self-check OK')"
 
 USER node
 EXPOSE 8080

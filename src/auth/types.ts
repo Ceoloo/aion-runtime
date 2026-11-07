@@ -31,9 +31,19 @@ export interface ApiKeyRecord {
   principal: Principal;
 }
 
+export interface KeycloakGatewayConfig {
+  issuer: string;
+  audience: string;
+  allowedClients: string[];
+}
+
+/** API keys remain the unmodified default until the operator enables Keycloak.
+ * Keycloak mode rejects API-key fallback and requires required auth mode. */
 export interface GatewayAuthConfig {
   mode: AuthMode;
   apiKeys: ApiKeyRecord[];
+  provider?: 'api-key' | 'keycloak';
+  keycloak?: KeycloakGatewayConfig;
 }
 
 export type AuthFailureCode =

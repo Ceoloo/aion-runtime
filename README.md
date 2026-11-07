@@ -100,3 +100,18 @@ image.
 
 Seeded by extracting the Phase 3 reference host from `aion-infra/runtime/`
 unchanged. See ADR-002 for the decision and migration path.
+
+## Sentinel Identity v0.2 — opt-in Keycloak authentication (DRAFT)
+
+The optional `AION_AUTH_PROVIDER=keycloak` selects the pinned
+`@aion/sentinel` signed-JWT verifier at Runtime's existing gateway auth
+boundary. The default remains the **unchanged** API-key path; no automatic
+fallback is permitted when Keycloak is selected. Runtime reads durable
+principal and actor mapping from AION Data's `aion_auth` schema.
+
+**Disabled until approved**: migration 0015, staging Keycloak realm, tenant
+and approval isolation tests, independent security audit, readiness proofs,
+and maintainer/operator deployment approval. See
+[the integration handoff](docs/sentinel-keycloak-gateway.md).
+
+This branch is a review artifact, not a production authorization.

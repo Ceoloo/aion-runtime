@@ -150,10 +150,8 @@ import type { ControlPlane } from './control-plane.js';
 import type { Logger } from './logger.js';
 import type { Principal } from './auth/types.js';
 import type { AuthDenied } from './auth/authenticate.js';
-import {
-  authenticateRequest,
-  assertPrincipalTenantAccess,
-} from './auth/authenticate.js';
+import { assertPrincipalTenantAccess } from './auth/authenticate.js';
+import { authenticateGatewayRequest } from './auth/keycloak-gateway.js';
 import {
   resolveDurableActor,
   resolveApproverActor,
@@ -347,7 +345,7 @@ export async function handleGatewayRequest(
   const path = url.split('?')[0] ?? url;
 
   try {
-    const auth = authenticateRequest(req, cp.auth);
+    const auth = await authenticateGatewayRequest(req, cp.auth, cp.keycloakVerifier);
     if (!auth.ok) return authDeniedResponse(auth);
     const principal = auth.principal;
     principalContext.enterWith(principal);

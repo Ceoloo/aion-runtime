@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Vendor + build @aion/core and @aion/data
         run: node scripts/setup-deps.mjs
@@ -275,3 +275,24 @@ jobs:
           tags: ${{ steps.refs.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  sentinel-image-smoke:
+    name: Sentinel PR image build + boot check (no publish)
+    if: github.event_name == 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and load image (no registry push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: aion-runtime:sentinel-pr-smoke
+      - name: Ephemeral Postgres migration and Runtime boot certificate
+        run: bash scripts/image-boot-check.sh aion-runtime:sentinel-pr-smoke "${GITHUB_SHA}"

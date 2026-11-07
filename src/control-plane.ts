@@ -30,6 +30,8 @@ import type {
 import { createDataLayer, type DataLayer } from '@aion/data';
 import { currentTenantId } from './tenant-context.js';
 import type { RuntimeConfig } from './config.js';
+import type { KeycloakVerifier } from '@aion/sentinel';
+import { createKeycloakRuntimeVerifier } from './auth/keycloak-gateway.js';
 import type { GatewayAuthConfig } from './auth/types.js';
 import { GhlAdapter, MISSION_009_CAPABILITIES } from './adapters/ghl/index.js';
 import { createCrmBackendFromEnv } from './adapters/crm/index.js';
@@ -152,6 +154,8 @@ export interface ControlPlane {
   routingOverrides: Map<string, RoutingOverride>;
   /** Gateway identity plane — principals + auth mode. */
   auth: GatewayAuthConfig;
+  /** Present only when opt-in Keycloak JWT verification is configured. */
+  keycloakVerifier?: KeycloakVerifier;
   /** SELECT 1 against the app connection — the readiness probe's DB check. */
   checkDatabase(): Promise<void>;
   close(): Promise<void>;
@@ -263,6 +267,9 @@ export function buildControlPlane(
     policyEngine,
     routingOverrides: new Map(),
     auth: config.auth,
+    ...(config.auth.provider === 'keycloak'
+      ? { keycloakVerifier: createKeycloakRuntimeVerifier(config.auth, dataLayer) }
+      : {}),
     async checkDatabase(): Promise<void> {
       await dataLayer.pool.query('SELECT 1');
     },
