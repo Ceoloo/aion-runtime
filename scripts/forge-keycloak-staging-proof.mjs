@@ -53,7 +53,12 @@ async function requestJson(path,options={}){
   const res=await fetch(keycloakOrigin+path,options);
   let parsed=null;const txt=await res.text();
   try{if(txt)parsed=JSON.parse(txt);}catch{}
-  if(!res.ok)throw Error('Keycloak API status '+res.status+' for '+path);
+  if(!res.ok){
+    const code=typeof parsed?.error==='string'?parsed.error.slice(0,50):'none';
+    const detail=typeof parsed?.error_description==='string'?
+      parsed.error_description.replace(/[^A-Za-z0-9 ._-]/g,'').slice(0,120):'unavailable';
+    throw Error('Keycloak API status '+res.status+' error='+code+' detail='+detail+' for '+path);
+  }
   return parsed;
 }
 async function adminAccess(){
@@ -90,7 +95,8 @@ async function createRealm(adminToken){
       enabled:true,sslRequired:'all',accessTokenLifespan:180,
       clients:[client(clientId,true),client(otherClientId,false)],
       users:[{
-        username,enabled:true,emailVerified:false,
+        username,enabled:true,email:'operator@forge-ci.invalid',
+        firstName:'Forge',lastName:'Proof',emailVerified:true,
         credentials:[{type:'password',value:process.env.FORGE_CI_USER_PASSWORD,
           temporary:false}],
         requiredActions:[],
