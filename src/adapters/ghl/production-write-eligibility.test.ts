@@ -15,6 +15,7 @@ import {
 import { GhlAdapter } from './ghl-adapter.js';
 import {
   PROTECTED_LIVE_GHL_RECORD_SHA256,
+  PROTECTED_LIVE_TWENTY_RECORD_SHA256,
   SYNTHETIC_TO_PRODUCTION_DENIED,
   assessLiveCustomerWrite,
   clearLiveFixtureRecords,
@@ -121,6 +122,53 @@ describe('live CRM write eligibility', () => {
     assert.equal(decision.code, SYNTHETIC_TO_PRODUCTION_DENIED);
   });
 
+  it('refuses an OL-001-shaped note on twenty-live against a stand-in protected Twenty hash', () => {
+    const rawTwentyId = 'twenty_protected_person_ol001';
+    rememberLiveFixtureRecord(rawTwentyId);
+    const decision = assessLiveCustomerWrite({
+      backendName: 'twenty-live',
+      action: 'note.create',
+      payload: {
+        contactId: rawTwentyId,
+        body: INCIDENT_NOTE,
+      },
+      metadata: { synthetic: true, cohort: 'OL-001' },
+      protectedHashes: [sha256Hex(rawTwentyId)],
+    });
+    assert.equal(decision.eligible, false);
+    assert.equal(decision.disposition, 'deny');
+    assert.equal(decision.code, SYNTHETIC_TO_PRODUCTION_DENIED);
+  });
+
+  it('does not apply GHL production hashes on twenty-live by default', () => {
+    // Stand-in id whose hash is forced onto the GHL list only — Twenty default
+    // denylist must stay independent (starts empty / separate array).
+    const standIn = 'ghl_list_only_stand_in';
+    const ghlHashes = [sha256Hex(standIn)];
+    rememberLiveFixtureRecord(standIn);
+    const onTwenty = assessLiveCustomerWrite({
+      backendName: 'twenty-live',
+      action: 'note.create',
+      payload: { contactId: standIn, body: 'ordinary qualification note' },
+      metadata: { synthetic: true },
+      // No override — uses PROTECTED_LIVE_TWENTY_RECORD_SHA256 (empty / separate).
+    });
+    // Remembered fixture + empty Twenty denylist → allow-fixture (GHL hash not consulted).
+    assert.equal(onTwenty.disposition, 'allow-fixture');
+    assert.equal(onTwenty.eligible, true);
+
+    const onGhl = assessLiveCustomerWrite({
+      backendName: 'ghl-live',
+      action: 'note.create',
+      payload: { contactId: standIn, body: 'ordinary qualification note' },
+      metadata: { synthetic: true },
+      protectedHashes: ghlHashes,
+    });
+    assert.equal(onGhl.disposition, 'deny');
+    assert.equal(onGhl.code, SYNTHETIC_TO_PRODUCTION_DENIED);
+    assert.ok(PROTECTED_LIVE_GHL_RECORD_SHA256.length >= 1);
+  });
+
   it('allows the same note on the fake Twenty backend', () => {
     const decision = assessLiveCustomerWrite({
       backendName: 'twenty-fake',
@@ -225,11 +273,15 @@ describe('live CRM write eligibility', () => {
       '../../../scripts/lib/production-ids.json',
     );
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as {
-      sha256: { ghlRecordIds: string[] };
+      sha256: { ghlRecordIds: string[]; twentyRecordIds: string[] };
     };
     assert.deepEqual(
       [...PROTECTED_LIVE_GHL_RECORD_SHA256],
       parsed.sha256.ghlRecordIds,
+    );
+    assert.deepEqual(
+      [...PROTECTED_LIVE_TWENTY_RECORD_SHA256],
+      parsed.sha256.twentyRecordIds,
     );
   });
 });
@@ -282,6 +334,32 @@ describe('GhlAdapter live write boundary', () => {
         body: INCIDENT_NOTE,
         idempotencyKey: 'syn-body-twenty',
       }),
+    );
+    assert.equal(result.status, 'failed');
+    assert.equal(result.error?.code, SYNTHETIC_TO_PRODUCTION_DENIED);
+    assert.equal(backend.calls.length, 0);
+    assert.equal(sideEffects.saved.length, 0);
+  });
+
+  it('OL-001 note + stand-in protected Twenty hash → DENY before the external request', async () => {
+    const twentyId = 'twenty_protected_person_ol001';
+    const backend = new RecordingBackend('twenty-live');
+    const sideEffects = new MemorySideEffects();
+    const adapter = new GhlAdapter({
+      sideEffects: sideEffects as never,
+      backend,
+      protectedRecordHashes: [sha256Hex(twentyId)],
+    });
+    const result = await adapter.execute(
+      request(
+        'crm.note.create',
+        {
+          contactId: twentyId,
+          body: INCIDENT_NOTE,
+          idempotencyKey: 'ol001-twenty-protected',
+        },
+        { synthetic: true, cohort: 'OL-001' },
+      ),
     );
     assert.equal(result.status, 'failed');
     assert.equal(result.error?.code, SYNTHETIC_TO_PRODUCTION_DENIED);

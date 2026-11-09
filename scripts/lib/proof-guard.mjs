@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 // Fail-closed safety guard for every proof / acceptance script.
 //
-//   node scripts/lib/proof-guard.mjs --mode fake|live-capability|live-acceptance|live-aio17
+//   node scripts/lib/proof-guard.mjs --mode fake|live-capability|live-acceptance|live-aio17|live-twenty
 //
 // Exit 0 = allowed, exit 3 = refused. It runs FIRST — before any build, migration, runtime start or network call —
 // and itself makes no network request (only, when a DB URL is given, read-only SELECTs against that database).
 //
 // Principles
 //  * Proofs default to the FAKE GHL backend. Credentials being present NEVER selects live mode.
-//  * Live mode needs ALL of: AION_PROOF_LIVE=1, GHL_BACKEND=live, an allowlisted TEST location, a test-scope
+//  * GHL live mode needs ALL of: AION_PROOF_LIVE=1, GHL_BACKEND=live, an allowlisted TEST location, a test-scope
 //    attestation, an explicit non-production tenant / record ids / target runtime — and none may match a known
 //    production identifier (stored only as SHA-256 in production-ids.json).
+//  * Twenty live mode (Gate C) needs ALL of: AION_PROOF_LIVE=1, CRM_PROVIDER=twenty, TWENTY_BACKEND=live,
+//    TWENTY_API_BASE_URL + TWENTY_API_KEY, AION_PROOF_CREDENTIAL_SCOPE=disposable-twenty, explicit
+//    TWENTY_ACCEPTANCE_TENANT — never runs in default CI (secrets must be supplied by the operator).
 //  * Production-target protections (env, ids, DB production markers) cannot be skipped by any flag.
 //  * The only opt-out (AION_PROOF_DB_DISPOSABLE=1) skips just the "DB already has non-proof rows" check, and is
 //    honored only inside GitHub Actions (GITHUB_ACTIONS=true); it never skips production markers.
@@ -39,7 +42,7 @@ const finish = () => {
   }
 };
 
-if (!['fake', 'live-capability', 'live-acceptance', 'live-aio17'].includes(mode)) {
+if (!['fake', 'live-capability', 'live-acceptance', 'live-aio17', 'live-twenty'].includes(mode)) {
   bad(`unknown mode "${mode}"`);
   finish();
 }
@@ -61,14 +64,66 @@ if (runtimeUrl) {
 
 const CRED_VARS = ['GHL_API_KEY', 'AION_GHL_API_KEY', 'GHL_LOCATION_ID', 'AION_GHL_LOCATION_ID'];
 const prodTenants = [...PROD.tenants, ...val('AION_PRODUCTION_TENANTS').split(',').map((s) => s.trim()).filter(Boolean)];
+const extra = (k) => val(k).split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
 
 if (mode === 'fake') {
   for (const v of CRED_VARS) if (val(v)) bad(`${v} is set — fake-backend proofs must run with no GHL credentials (credentials never imply live)`);
   if (val('GHL_API_BASE_URL')) bad('GHL_API_BASE_URL is set — fake-backend proofs must not redirect the GHL endpoint');
   if (val('GHL_BACKEND') && val('GHL_BACKEND').toLowerCase() !== 'fake') bad(`GHL_BACKEND=${val('GHL_BACKEND')} — fake-backend proofs may only run with GHL_BACKEND unset or "fake"`);
   if (val('AION_PROOF_LIVE')) bad('AION_PROOF_LIVE is set in a fake-backend proof');
+} else if (mode === 'live-twenty') {
+  // ---- Gate C: disposable Twenty live proof (never default CI) ----------------------------------------------
+  if (val('AION_PROOF_LIVE') !== '1') bad('live-twenty requires AION_PROOF_LIVE=1');
+  if (val('CRM_PROVIDER').toLowerCase() !== 'twenty') bad('live-twenty requires CRM_PROVIDER=twenty');
+  if (val('TWENTY_BACKEND').toLowerCase() !== 'live') bad('live-twenty requires TWENTY_BACKEND=live (selection is never inferred from credentials)');
+  if (val('GHL_BACKEND') && val('GHL_BACKEND').toLowerCase() === 'live') {
+    bad('live-twenty must not also set GHL_BACKEND=live (disposable Twenty only — no live GHL)');
+  }
+  for (const v of CRED_VARS) if (val(v)) bad(`${v} is set — live-twenty must not carry GHL credentials`);
+  if (val('GHL_API_BASE_URL')) bad('GHL_API_BASE_URL is set — live-twenty must not redirect GHL');
+
+  const twentyBase = val('TWENTY_API_BASE_URL');
+  const twentyKey = val('TWENTY_API_KEY');
+  if (!twentyBase) bad('TWENTY_API_BASE_URL not set');
+  if (!twentyKey) bad('TWENTY_API_KEY not set');
+  if (twentyBase) {
+    try {
+      const u = new URL(twentyBase);
+      if (PROD.runtimeHosts.includes(u.hostname)) bad(`TWENTY_API_BASE_URL targets a production host (${u.hostname})`);
+      // Prefer internal / staging URLs; refuse obvious public production CRM hosts if listed later.
+    } catch { bad('TWENTY_API_BASE_URL is not a valid URL'); }
+  }
+  if (val('AION_PROOF_CREDENTIAL_SCOPE') !== 'disposable-twenty') {
+    bad('AION_PROOF_CREDENTIAL_SCOPE=disposable-twenty acknowledgement missing');
+  }
+
+  const tenant = val('TWENTY_ACCEPTANCE_TENANT');
+  if (!tenant) bad('TWENTY_ACCEPTANCE_TENANT must be set explicitly (no default)');
+  else if (prodTenants.includes(tenant)) bad(`tenant "${tenant}" is a production tenant`);
+
+  const twentyProdRec = new Set([
+    ...(PROD.sha256.twentyRecordIds ?? []),
+    ...extra('AION_PRODUCTION_TWENTY_RECORD_SHA256'),
+  ]);
+  for (const k of ['TWENTY_ACCEPTANCE_CONTACT_ID', 'TWENTY_ACCEPTANCE_OPPORTUNITY_ID']) {
+    // Optional for create-only disposable paths; when set, must not hash to a known production Twenty id.
+    if (val(k) && twentyProdRec.has(sha(val(k)))) bad(`${k} is a known PRODUCTION Twenty record id`);
+  }
+
+  if (!runtimeUrl) bad('AION_RUNTIME_URL must be set explicitly (no default)');
+  else {
+    const loopback = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(runtimeHost);
+    const okHosts = val('AION_PROOF_RUNTIME_ALLOWLIST').split(',').map((s) => s.trim()).filter(Boolean);
+    if (!loopback && !okHosts.includes(runtimeHost)) bad('AION_RUNTIME_URL must be loopback or listed in AION_PROOF_RUNTIME_ALLOWLIST');
+  }
+
+  // Cross-tenant: optional TWENTY_API_KEY_B for same-process isolation; otherwise run a second process
+  // with a different TWENTY_API_KEY (see docs/twenty-live-acceptance.md).
+  if (val('TWENTY_API_KEY_B') && val('TWENTY_API_KEY_B') === twentyKey) {
+    bad('TWENTY_API_KEY_B must differ from TWENTY_API_KEY when set (cross-tenant isolation)');
+  }
 } else {
-  // ---- explicit live mode: every condition is mandatory ------------------------------------------------------
+  // ---- explicit GHL live mode: every condition is mandatory -------------------------------------------------
   if (val('AION_PROOF_LIVE') !== '1') bad('live mode requires AION_PROOF_LIVE=1');
   if (val('GHL_BACKEND').toLowerCase() !== 'live') bad('live mode requires GHL_BACKEND=live (selection is never inferred from credentials)');
   for (const [a, b] of [['GHL_API_KEY', 'AION_GHL_API_KEY'], ['GHL_LOCATION_ID', 'AION_GHL_LOCATION_ID']]) {
@@ -84,7 +139,6 @@ if (mode === 'fake') {
   if (!allow.length) bad('AION_PROOF_GHL_TEST_LOCATIONS (allowlist of TEST location ids) is empty');
   if (loc && allow.length && !allow.includes(loc)) bad('the target location is not in AION_PROOF_GHL_TEST_LOCATIONS');
   // AION_PRODUCTION_*_SHA256 can only ADD denied hashes to the repo list; nothing can remove one.
-  const extra = (k) => val(k).split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
   const prodLoc = new Set([...PROD.sha256.ghlLocationIds, ...extra('AION_PRODUCTION_GHL_LOCATION_SHA256')]);
   if (loc && prodLoc.has(sha(loc))) bad('the target location is a known PRODUCTION location');
   if (allow.some((a) => prodLoc.has(sha(a)))) bad('AION_PROOF_GHL_TEST_LOCATIONS contains a known PRODUCTION location');
@@ -177,4 +231,5 @@ if (urls.length) {
 
 finish();
 if (mode === 'fake') console.error('[proof-guard] ok: fake backend, no GHL credentials, no production markers');
+else if (mode === 'live-twenty') console.error('[proof-guard] ok: EXPLICIT LIVE TWENTY MODE against disposable staging — live Twenty writes are enabled');
 else console.error('[proof-guard] ok: EXPLICIT LIVE MODE against an allowlisted test location — live writes are enabled');
