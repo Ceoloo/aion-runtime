@@ -5,6 +5,11 @@ and aion_auth identity mapping. Sentinel only verifies a signed token and
 resolves a pre-provisioned identity. This feature is **opt-in and disabled
 until an authorized staging/prod rollout**.
 
+**Verification plan (normative gate checklist):** see aion-docs
+`architecture/sentinel-runtime-data-trust-boundary-verification.md`
+(TechOps Monday Brief 2026-11-09; Linear AIO-121 / AIO-122). CI green and this
+draft do **not** authorize persistent staging or production cutover.
+
 ## Configuration
 
 | Variable | Default | Keycloak mode |
